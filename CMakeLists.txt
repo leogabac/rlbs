@@ -25,6 +25,15 @@ target_include_directories(rlbs_core
         ${PROJECT_SOURCE_DIR}/include
 )
 
+add_library(rlbs_execution
+    src/execution/process_runner.cpp
+)
+
+target_include_directories(rlbs_execution
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
 add_executable(rlbs
     apps/rlbs/main.cpp
 )
@@ -68,4 +77,5 @@ if(BUILD_TESTING)
         NAME rlbs_core_tests
         COMMAND rlbs_core_tests
     )
+
 endif()
