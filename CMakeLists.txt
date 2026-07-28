@@ -78,4 +78,24 @@ if(BUILD_TESTING)
         COMMAND rlbs_core_tests
     )
 
+    add_executable(rlbs_execution_tests
+        tests/execution/process_runner_test.cpp
+    )
+
+    target_link_libraries(rlbs_execution_tests
+        PRIVATE
+            rlbs_execution
+    )
+
+    add_test(
+        NAME rlbs_execution_tests
+        COMMAND rlbs_execution_tests
+    )
+
+    set_tests_properties(
+        rlbs_execution_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
 endif()
