@@ -13,8 +13,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(rlbs_core
-    src/core/version.cpp
+    src/core/job.cpp
+    src/core/node.cpp
     src/core/resources.cpp
+    src/core/scheduler.cpp
+    src/core/version.cpp
 )
 
 target_include_directories(rlbs_core
@@ -48,3 +51,21 @@ target_link_libraries(rlbs-agent
     PRIVATE
         rlbs_core
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(rlbs_core_tests
+        tests/core/scheduler_test.cpp
+    )
+
+    target_link_libraries(rlbs_core_tests
+        PRIVATE
+            rlbs_core
+    )
+
+    add_test(
+        NAME rlbs_core_tests
+        COMMAND rlbs_core_tests
+    )
+endif()

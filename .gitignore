@@ -1,3 +1,5 @@
 /build/
 /cmake-build-*/
 /compile_commands.json
+
+*Plan.md
