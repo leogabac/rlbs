@@ -6,6 +6,7 @@ project(
     DESCRIPTION "A lightweight batch scheduler for small research clusters"
     LANGUAGES CXX
 )
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(rlbs_core
     src/core/version.cpp
+    src/core/resources.cpp
 )
 
 target_include_directories(rlbs_core
