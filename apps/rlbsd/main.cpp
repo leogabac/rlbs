@@ -1,8 +1,15 @@
 #include <iostream>
 
-int main (int argc, char *argv[]) {
+#include <rlbs/core/version.hpp>
 
-    std::cout << "rlbsd: Reiko's Lab Batch Scheduler daemon\n";
+int main()
+{
+    std::cout
+        << "Starting "
+        << rlbs::project_name()
+        << " daemon, version "
+        << rlbs::version()
+        << '\n';
 
     return 0;
 }

@@ -1,8 +1,13 @@
 #include <iostream>
 
-int main (int argc, char *argv[]) {
+#include <rlbs/core/version.hpp>
 
-    std::cout << "rlbs-agent: Reiko's Lab Batch Scheduler node agent\n";
+int main()
+{
+    std::cout
+        << "Starting RLBS agent, version "
+        << rlbs::version()
+        << '\n';
 
     return 0;
 }

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/holo/projects/rlbs/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
