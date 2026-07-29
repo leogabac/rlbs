@@ -34,7 +34,12 @@ struct StatusRequest {
     JobId job_id{0};
 };
 
-using ControlRequest = std::variant<SubmitRequest, QueueRequest, StatusRequest>;
+struct CancelRequest {
+    JobId job_id{0};
+};
+
+using ControlRequest =
+    std::variant<SubmitRequest, QueueRequest, StatusRequest, CancelRequest>;
 
 struct SubmitResponse {
     JobId job_id{0};
@@ -58,12 +63,17 @@ struct StatusResponse {
     Job job;
 };
 
+struct CancelResponse {
+    JobId job_id{0};
+};
+
 struct ErrorResponse {
     std::string message;
 };
 
 using ControlResponse =
-    std::variant<SubmitResponse, QueueResponse, StatusResponse, ErrorResponse>;
+    std::variant<SubmitResponse, QueueResponse, StatusResponse, CancelResponse,
+                 ErrorResponse>;
 
 // frames carry their own size even though unix seqpacket already has packet
 // boundaries. tcp can reuse the exact bytes later without inventing framing

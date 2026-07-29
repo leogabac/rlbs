@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <rlbs/control/protocol.hpp>
+#include <rlbs/local/coordinator.hpp>
 
 namespace rlbs {
 namespace {
@@ -192,7 +193,8 @@ receive_frame(int socket) {
 }
 
 [[nodiscard]] ControlResponse handle_request(const ControlRequest& request,
-                                             JobRepository& repository) {
+                                             JobRepository& repository,
+                                             LocalCoordinator& coordinator) {
     // transport ends here. every command uses repository methods instead of
     // teaching socket code enough sqlite to become a second database layer
     if (const auto* submitted = std::get_if<SubmitRequest>(&request)) {
@@ -228,18 +230,29 @@ receive_frame(int socket) {
         return QueueResponse{.jobs = std::move(summaries)};
     }
 
-    const auto job_id = std::get<StatusRequest>(request).job_id;
-    auto job = repository.find(job_id);
+    if (const auto* status = std::get_if<StatusRequest>(&request)) {
+        auto job = repository.find(status->job_id);
 
-    if (!job) {
-        return ErrorResponse{.message = job.error().message};
-    }
-    if (!*job) {
-        return ErrorResponse{.message = "job " + std::to_string(job_id) +
-                                        " was not found"};
+        if (!job) {
+            return ErrorResponse{.message = job.error().message};
+        }
+        if (!*job) {
+            return ErrorResponse{.message = "job " +
+                                            std::to_string(status->job_id) +
+                                            " was not found"};
+        }
+
+        return StatusResponse{.job = std::move(**job)};
     }
 
-    return StatusResponse{.job = std::move(**job)};
+    const auto job_id = std::get<CancelRequest>(request).job_id;
+    auto cancelled = coordinator.cancel(job_id);
+
+    if (!cancelled) {
+        return ErrorResponse{.message = cancelled.error().message};
+    }
+
+    return CancelResponse{.job_id = job_id};
 }
 
 void send_error_response(int socket, std::string_view message) {
@@ -254,20 +267,22 @@ void send_error_response(int socket, std::string_view message) {
 } // namespace
 
 ControlServer::ControlServer(int socket, std::filesystem::path path,
-                             JobRepository& repository)
+                             JobRepository& repository,
+                             LocalCoordinator& coordinator)
     : socket_{socket}, path_{std::move(path)}, repository_{&repository},
-      owns_path_{true} {}
+      coordinator_{&coordinator}, owns_path_{true} {}
 
 ControlServer::ControlServer(ControlServer&& other) noexcept
     : socket_{std::exchange(other.socket_, -1)}, path_{std::move(other.path_)},
-      repository_{other.repository_},
+      repository_{other.repository_}, coordinator_{other.coordinator_},
       owns_path_{std::exchange(other.owns_path_, false)} {}
 
 ControlServer::~ControlServer() { close(); }
 
 std::expected<ControlServer, ControlSocketError>
 ControlServer::listen(const std::filesystem::path& path,
-                      JobRepository& repository) {
+                      JobRepository& repository,
+                      LocalCoordinator& coordinator) {
     // order matters: validate the address, deal with a stale name, create the
     // fd, bind the name, then listen. later failures undo the filesystem entry
     // so the next startup is not punished for this one
@@ -319,7 +334,7 @@ ControlServer::listen(const std::filesystem::path& path,
                                      listen_error, path.string())};
     }
 
-    return ControlServer{socket.release(), path, repository};
+    return ControlServer{socket.release(), path, repository, coordinator};
 }
 
 std::expected<std::size_t, ControlSocketError> ControlServer::poll() {
@@ -368,7 +383,8 @@ void ControlServer::handle_client(int client_socket) {
         return;
     }
 
-    auto response = encode_response(handle_request(*request, *repository_));
+    auto response =
+        encode_response(handle_request(*request, *repository_, *coordinator_));
 
     if (!response) {
         send_error_response(client_socket, response.error().message);
@@ -445,6 +461,22 @@ ControlClient::status(JobId job_id) const {
     return std::unexpected{
         error(ControlSocketOperation::server_response, EPROTO,
               "daemon returned the wrong response to status")};
+}
+
+std::expected<JobId, ControlSocketError>
+ControlClient::cancel(JobId job_id) const {
+    auto response = request(ControlRequest{CancelRequest{.job_id = job_id}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (const auto* cancelled = std::get_if<CancelResponse>(&*response)) {
+        return cancelled->job_id;
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to cancel")};
 }
 
 std::expected<ControlResponse, ControlSocketError>

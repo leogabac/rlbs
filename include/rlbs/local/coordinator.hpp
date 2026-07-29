@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <expected>
 #include <list>
@@ -21,6 +22,9 @@ enum class LocalCoordinatorOperation {
     launch_process,
     persist_running,
     poll_process,
+    load_job,
+    signal_cancellation,
+    persist_cancelled,
     persist_finished,
     release_resources,
 };
@@ -43,6 +47,9 @@ class LocalCoordinator {
     [[nodiscard]] std::expected<void, LocalCoordinatorError>
     tick(bool start_new_jobs = true);
 
+    [[nodiscard]] std::expected<void, LocalCoordinatorError>
+    cancel(JobId job_id);
+
     [[nodiscard]] std::size_t active_job_count() const;
     [[nodiscard]] const Node& local_node() const;
 
@@ -51,6 +58,9 @@ class LocalCoordinator {
         JobId job_id;
         ResourceAllocation allocation;
         ProcessHandle process;
+        bool cancellation_requested{false};
+        bool cancellation_forced{false};
+        std::chrono::steady_clock::time_point cancellation_requested_at{};
     };
 
     [[nodiscard]] std::expected<void, LocalCoordinatorError> reap_finished();

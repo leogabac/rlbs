@@ -244,6 +244,7 @@ commands:
   submit                 submit a batch job
   queue                  list jobs
   status JOB_ID          show one job
+  cancel JOB_ID          cancel one job
 
 general:
   --version              show the rlbs version

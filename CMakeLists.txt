@@ -90,6 +90,13 @@ target_link_libraries(rlbs_local
         rlbs_persistence
 )
 
+# cancel requests have to reach the coordinator that actually owns a running
+# process. keep this after both targets exist so cmake sees a project target
+target_link_libraries(rlbs_control
+    PUBLIC
+        rlbs_local
+)
+
 add_library(rlbs_daemon
     src/daemon/config.cpp
 )

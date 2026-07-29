@@ -57,7 +57,15 @@ int main(int argc, char* argv[]) {
     }
 
     rlbs::JobRepository repository{*database};
-    auto control = rlbs::ControlServer::listen(config->socket_path, repository);
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::Node local_node{config->node_id, config->capacity, config->reserved};
+    rlbs::LocalCoordinator coordinator{
+        repository,
+        std::move(local_node),
+        scheduler,
+    };
+    auto control = rlbs::ControlServer::listen(config->socket_path, repository,
+                                               coordinator);
 
     if (!control) {
         std::cerr << "rlbsd: could not open control socket: "
@@ -70,14 +78,6 @@ int main(int argc, char* argv[]) {
         std::cerr << '\n';
         return 1;
     }
-
-    rlbs::FirstFitScheduler scheduler;
-    rlbs::Node local_node{config->node_id, config->capacity, config->reserved};
-    rlbs::LocalCoordinator coordinator{
-        repository,
-        std::move(local_node),
-        scheduler,
-    };
 
     std::signal(SIGINT, request_stop);
     std::signal(SIGTERM, request_stop);

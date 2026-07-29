@@ -48,6 +48,24 @@ void test_status_parser() {
     expect(!rlbs::parse_status_command({}), "status requires a job id");
 }
 
+void test_cancel_parser() {
+    const std::array<std::string_view, 3> arguments{
+        "42",
+        "--socket",
+        "/tmp/custom.sock",
+    };
+    const auto parsed = rlbs::parse_cancel_command(arguments);
+
+    expect(parsed && parsed->job_id == 42, "cancel parses the job id");
+    expect(parsed && parsed->socket_path == "/tmp/custom.sock",
+           "cancel parses its socket");
+
+    const std::array<std::string_view, 1> invalid{"not-an-id"};
+    expect(!rlbs::parse_cancel_command(invalid),
+           "cancel rejects a nonnumeric job id");
+    expect(!rlbs::parse_cancel_command({}), "cancel requires a job id");
+}
+
 void test_queue_format() {
     const std::vector<rlbs::JobSummary> jobs{
         {
@@ -118,6 +136,7 @@ void test_status_format() {
 int main() {
     test_queue_parser();
     test_status_parser();
+    test_cancel_parser();
     test_queue_format();
     test_status_format();
 

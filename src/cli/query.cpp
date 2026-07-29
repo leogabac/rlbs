@@ -155,6 +155,59 @@ parse_status_command(std::span<const std::string_view> arguments) {
     return command;
 }
 
+std::expected<CancelCommand, std::string>
+parse_cancel_command(std::span<const std::string_view> arguments) {
+    CancelCommand command;
+    bool found_job_id = false;
+
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto argument = arguments[index];
+
+        if (argument == "--help" || argument == "-h") {
+            command.show_help = true;
+            continue;
+        }
+        if (argument == "--socket") {
+            auto value = take_value(arguments, index);
+
+            if (!value) {
+                return std::unexpected{std::move(value.error())};
+            }
+
+            command.socket_path = *value;
+            continue;
+        }
+        if (argument.starts_with('-')) {
+            return std::unexpected{"unknown cancel option: " +
+                                   std::string{argument}};
+        }
+        if (found_job_id) {
+            return std::unexpected{"cancel accepts exactly one job id"};
+        }
+
+        auto job_id = parse_job_id(argument);
+
+        if (!job_id) {
+            return std::unexpected{std::move(job_id.error())};
+        }
+
+        command.job_id = *job_id;
+        found_job_id = true;
+    }
+
+    if (command.show_help) {
+        return command;
+    }
+    if (!found_job_id) {
+        return std::unexpected{"cancel needs a job id"};
+    }
+    if (command.socket_path.empty()) {
+        return std::unexpected{"--socket cannot be empty"};
+    }
+
+    return command;
+}
+
 std::string format_queue(const std::vector<JobSummary>& jobs) {
     std::ostringstream output;
     output << std::left << std::setw(8) << "job id" << std::setw(12) << "state"
@@ -238,6 +291,15 @@ options:
 
 std::string_view status_usage() {
     return R"usage(usage: rlbs status [options] JOB_ID
+
+options:
+  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  -h, --help             show this help
+)usage";
+}
+
+std::string_view cancel_usage() {
+    return R"usage(usage: rlbs cancel [options] JOB_ID
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)

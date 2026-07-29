@@ -10,6 +10,8 @@
 
 namespace rlbs {
 
+class LocalCoordinator;
+
 enum class ControlSocketOperation {
     inspect_path,
     create_socket,
@@ -37,7 +39,8 @@ struct ControlSocketError {
 class ControlServer {
   public:
     [[nodiscard]] static std::expected<ControlServer, ControlSocketError>
-    listen(const std::filesystem::path& path, JobRepository& repository);
+    listen(const std::filesystem::path& path, JobRepository& repository,
+           LocalCoordinator& coordinator);
 
     ControlServer(const ControlServer&) = delete;
     ControlServer& operator=(const ControlServer&) = delete;
@@ -55,13 +58,14 @@ class ControlServer {
 
   private:
     ControlServer(int socket, std::filesystem::path path,
-                  JobRepository& repository);
+                  JobRepository& repository, LocalCoordinator& coordinator);
 
     void handle_client(int client_socket);
 
     int socket_{-1};
     std::filesystem::path path_;
     JobRepository* repository_{nullptr};
+    LocalCoordinator* coordinator_{nullptr};
     bool owns_path_{false};
 };
 
@@ -79,6 +83,9 @@ class ControlClient {
 
     [[nodiscard]] std::expected<Job, ControlSocketError>
     status(JobId job_id) const;
+
+    [[nodiscard]] std::expected<JobId, ControlSocketError>
+    cancel(JobId job_id) const;
 
   private:
     [[nodiscard]] std::expected<ControlResponse, ControlSocketError>

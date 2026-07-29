@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace rlbs {
 namespace {
+
+constexpr auto cancellation_grace_period = std::chrono::seconds{2};
 
 [[nodiscard]] LocalCoordinatorError
 repository_failure(LocalCoordinatorOperation operation,
@@ -64,6 +67,26 @@ process_failure(LocalCoordinatorOperation operation,
     return detail;
 }
 
+[[nodiscard]] std::string_view terminal_state_name(JobState state) {
+    // cancel checks is_terminal first, so this helper only has three real
+    // answers. "unknown" keeps a future enum addition from lying in an error
+    switch (state) {
+    case JobState::completed:
+        return "completed";
+    case JobState::failed:
+        return "failed";
+    case JobState::cancelled:
+        return "cancelled";
+    case JobState::pending:
+    case JobState::assigned:
+    case JobState::starting:
+    case JobState::running:
+        return "unknown";
+    }
+
+    return "unknown";
+}
+
 } // namespace
 
 LocalCoordinator::LocalCoordinator(JobRepository& repository, Node local_node,
@@ -93,6 +116,79 @@ std::size_t LocalCoordinator::active_job_count() const {
 
 const Node& LocalCoordinator::local_node() const { return nodes_.front(); }
 
+std::expected<void, LocalCoordinatorError>
+LocalCoordinator::cancel(JobId job_id) {
+    auto stored = repository_.find(job_id);
+
+    if (!stored) {
+        return std::unexpected{repository_failure(
+            LocalCoordinatorOperation::load_job, std::move(stored.error()))};
+    }
+    if (!*stored) {
+        return std::unexpected{LocalCoordinatorError{
+            .operation = LocalCoordinatorOperation::load_job,
+            .message = "job " + std::to_string(job_id) + " was not found",
+            .repository_error = std::nullopt,
+            .process_error = std::nullopt,
+        }};
+    }
+    if (is_terminal((*stored)->state)) {
+        return std::unexpected{LocalCoordinatorError{
+            .operation = LocalCoordinatorOperation::load_job,
+            .message = "job " + std::to_string(job_id) + " is already " +
+                       std::string{terminal_state_name((*stored)->state)},
+            .repository_error = std::nullopt,
+            .process_error = std::nullopt,
+        }};
+    }
+
+    if ((*stored)->state == JobState::pending) {
+        auto cancelled = repository_.transition(
+            job_id, {
+                        .state = JobState::cancelled,
+                        .assigned_node = std::nullopt,
+                        .result = std::nullopt,
+                        .detail = "cancelled before local launch",
+                    });
+
+        if (!cancelled) {
+            return std::unexpected{
+                repository_failure(LocalCoordinatorOperation::persist_cancelled,
+                                   std::move(cancelled.error()))};
+        }
+
+        return {};
+    }
+
+    auto active = std::ranges::find(active_jobs_, job_id, &ActiveJob::job_id);
+
+    if (active == active_jobs_.end()) {
+        return std::unexpected{LocalCoordinatorError{
+            .operation = LocalCoordinatorOperation::load_job,
+            .message = "job " + std::to_string(job_id) +
+                       " is not active on the local node",
+            .repository_error = std::nullopt,
+            .process_error = std::nullopt,
+        }};
+    }
+
+    // repeated cancel requests before the next reap are harmless. the first
+    // one already told the whole process group to stop, no need to spam it
+    if (active->cancellation_requested) {
+        return {};
+    }
+
+    if (auto terminated = runner_.terminate(active->process); !terminated) {
+        return std::unexpected{
+            process_failure(LocalCoordinatorOperation::signal_cancellation,
+                            std::move(terminated.error()))};
+    }
+
+    active->cancellation_requested = true;
+    active->cancellation_requested_at = std::chrono::steady_clock::now();
+    return {};
+}
+
 std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
     for (auto active = active_jobs_.begin(); active != active_jobs_.end();) {
         auto result = runner_.poll(active->process);
@@ -104,16 +200,39 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
         }
 
         if (!*result) {
+            // sigterm is the polite request. after a short grace period, a job
+            // ignoring it gets sigkill because "cancelled eventually maybe"
+            // is not a particularly useful scheduler feature
+            if (active->cancellation_requested &&
+                !active->cancellation_forced &&
+                std::chrono::steady_clock::now() -
+                        active->cancellation_requested_at >=
+                    cancellation_grace_period) {
+                if (auto killed = runner_.force_kill(active->process);
+                    !killed) {
+                    return std::unexpected{process_failure(
+                        LocalCoordinatorOperation::signal_cancellation,
+                        std::move(killed.error()))};
+                }
+
+                active->cancellation_forced = true;
+            }
+
             ++active;
             continue;
         }
 
+        const auto final_state = active->cancellation_requested
+                                     ? JobState::cancelled
+                                     : JobState::completed;
         auto completed = repository_.transition(
             active->job_id, {
-                                .state = JobState::completed,
+                                .state = final_state,
                                 .assigned_node = std::nullopt,
                                 .result = **result,
-                                .detail = "local process exited",
+                                .detail = active->cancellation_requested
+                                              ? "local process cancelled"
+                                              : "local process exited",
                             });
 
         if (!completed) {
@@ -254,6 +373,9 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         .job_id = job.id,
         .allocation = std::move(assignment.allocation),
         .process = std::move(*launched),
+        .cancellation_requested = false,
+        .cancellation_forced = false,
+        .cancellation_requested_at = {},
     });
     return {};
 }

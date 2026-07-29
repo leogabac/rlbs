@@ -1,6 +1,7 @@
 #include <rlbs/local/coordinator.hpp>
 
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -243,12 +244,94 @@ void test_launch_failure_marks_job_failed() {
     }
 }
 
+void test_pending_job_can_be_cancelled() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "cancel-pending.db");
+
+    expect(database.has_value(), "pending cancellation database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(
+        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
+
+    if (!submitted) {
+        expect(false, "pending cancellation job submits");
+        return;
+    }
+
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+
+    expect(coordinator.cancel(submitted->id).has_value(),
+           "pending job cancellation succeeds");
+    expect(coordinator.tick().has_value(),
+           "cancelled pending job does not break the next tick");
+    expect(coordinator.active_job_count() == 0,
+           "cancelled pending job never launches");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded && (*loaded)->state == rlbs::JobState::cancelled,
+           "pending cancellation is persisted");
+    expect(!coordinator.cancel(submitted->id),
+           "terminal job cannot be cancelled again");
+}
+
+void test_running_job_can_be_cancelled() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "cancel-running.db");
+
+    expect(database.has_value(), "running cancellation database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(
+        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
+
+    if (!submitted) {
+        expect(false, "running cancellation job submits");
+        return;
+    }
+
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+
+    expect(coordinator.tick().has_value(), "cancellation job starts");
+    expect(coordinator.active_job_count() == 1,
+           "cancellation fixture becomes active");
+    expect(coordinator.cancel(submitted->id).has_value(),
+           "running job accepts cancellation");
+    expect(coordinator.cancel(submitted->id).has_value(),
+           "repeated running cancellation is harmless");
+    expect(run_until_idle(coordinator),
+           "cancelled process is eventually reaped");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded && (*loaded)->state == rlbs::JobState::cancelled,
+           "running cancellation is persisted");
+    expect(loaded && *loaded && (*loaded)->result &&
+               (*loaded)->result->terminating_signal == SIGTERM,
+           "running cancellation stores the terminating signal");
+    expect(coordinator.local_node().available().cpus == 2,
+           "cancelled job returns its cpu allocation");
+}
+
 } // namespace
 
 int main() {
     test_queued_job_runs_to_completion();
     test_job_waits_when_resources_do_not_fit();
     test_launch_failure_marks_job_failed();
+    test_pending_job_can_be_cancelled();
+    test_running_job_can_be_cancelled();
 
     if (failures == 0) {
         std::cout << "all local coordinator tests passed\n";

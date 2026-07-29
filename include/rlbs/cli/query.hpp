@@ -22,15 +22,25 @@ struct StatusCommand {
     bool show_help{false};
 };
 
+struct CancelCommand {
+    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    JobId job_id{0};
+    bool show_help{false};
+};
+
 [[nodiscard]] std::expected<QueueCommand, std::string>
 parse_queue_command(std::span<const std::string_view> arguments);
 
 [[nodiscard]] std::expected<StatusCommand, std::string>
 parse_status_command(std::span<const std::string_view> arguments);
 
+[[nodiscard]] std::expected<CancelCommand, std::string>
+parse_cancel_command(std::span<const std::string_view> arguments);
+
 [[nodiscard]] std::string format_queue(const std::vector<JobSummary>& jobs);
 [[nodiscard]] std::string format_status(const Job& job);
 [[nodiscard]] std::string_view queue_usage();
 [[nodiscard]] std::string_view status_usage();
+[[nodiscard]] std::string_view cancel_usage();
 
 } // namespace rlbs

@@ -89,9 +89,12 @@ void test_query_requests_round_trip() {
         rlbs::encode_request(rlbs::ControlRequest{rlbs::QueueRequest{}});
     const auto status = rlbs::encode_request(
         rlbs::ControlRequest{rlbs::StatusRequest{.job_id = 73}});
+    const auto cancel = rlbs::encode_request(
+        rlbs::ControlRequest{rlbs::CancelRequest{.job_id = 74}});
 
     expect(queue.has_value(), "queue request encodes");
     expect(status.has_value(), "status request encodes");
+    expect(cancel.has_value(), "cancel request encodes");
 
     if (queue) {
         const auto decoded = rlbs::decode_request(*queue);
@@ -104,6 +107,12 @@ void test_query_requests_round_trip() {
         expect(decoded && std::get<rlbs::StatusRequest>(*decoded).job_id == 73,
                "status request keeps its job id");
     }
+
+    if (cancel) {
+        const auto decoded = rlbs::decode_request(*cancel);
+        expect(decoded && std::get<rlbs::CancelRequest>(*decoded).job_id == 74,
+               "cancel request keeps its job id");
+    }
 }
 
 void test_responses_round_trip() {
@@ -111,9 +120,12 @@ void test_responses_round_trip() {
         rlbs::encode_response(rlbs::SubmitResponse{.job_id = 42});
     const auto failed =
         rlbs::encode_response(rlbs::ErrorResponse{.message = "nope\nstill no"});
+    const auto cancelled =
+        rlbs::encode_response(rlbs::CancelResponse{.job_id = 43});
 
     expect(submitted.has_value(), "submit response encodes");
     expect(failed.has_value(), "error response encodes");
+    expect(cancelled.has_value(), "cancel response encodes");
 
     if (submitted) {
         const auto decoded = rlbs::decode_response(*submitted);
@@ -126,6 +138,12 @@ void test_responses_round_trip() {
         expect(decoded && std::get<rlbs::ErrorResponse>(*decoded).message ==
                               "nope\nstill no",
                "error response keeps its message");
+    }
+
+    if (cancelled) {
+        const auto decoded = rlbs::decode_response(*cancelled);
+        expect(decoded && std::get<rlbs::CancelResponse>(*decoded).job_id == 43,
+               "cancel response keeps its job id");
     }
 }
 

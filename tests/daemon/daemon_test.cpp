@@ -365,6 +365,64 @@ void test_real_cli_submits_to_daemon(
     expect(missing.output.contains("job 999 was not found"),
            "missing status explains which job was absent");
 
+    const auto long_job =
+        run_cli_command(cli_executable, {
+                                            "submit",
+                                            "--socket",
+                                            socket_path.string(),
+                                            "--name",
+                                            "cancel-me",
+                                            "--cpus",
+                                            "2",
+                                            "--cwd",
+                                            temporary.path().string(),
+                                            "--",
+                                            "/bin/sh",
+                                            "-c",
+                                            "sleep 30",
+                                        });
+    expect(long_job.exit_code == 0, "cancellation fixture submits");
+    expect(long_job.output == "submitted job 2\n",
+           "cancellation fixture gets the next job id");
+
+    bool running = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const auto loaded = repository.find(2);
+
+        if (loaded && *loaded && (*loaded)->state == rlbs::JobState::running) {
+            running = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(running, "real daemon starts the cancellation fixture");
+
+    const auto cancelled = run_cli_command(
+        cli_executable, {"cancel", "--socket", socket_path.string(), "2"});
+    expect(cancelled.exit_code == 0, "real rlbs cancel exits successfully");
+    expect(cancelled.output == "cancellation requested for job 2\n",
+           "real rlbs cancel confirms the requested job");
+
+    bool cancellation_stored = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const auto loaded = repository.find(2);
+
+        if (loaded && *loaded &&
+            (*loaded)->state == rlbs::JobState::cancelled) {
+            cancellation_stored = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(cancellation_stored,
+           "real daemon persists running-job cancellation");
+
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }
 

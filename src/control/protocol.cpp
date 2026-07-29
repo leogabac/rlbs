@@ -13,9 +13,11 @@ constexpr std::uint16_t protocol_version = 1;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
+constexpr std::uint8_t cancel_request_type = 4;
 constexpr std::uint8_t submit_response_type = 129;
 constexpr std::uint8_t queue_response_type = 130;
 constexpr std::uint8_t status_response_type = 131;
+constexpr std::uint8_t cancel_response_type = 132;
 constexpr std::uint8_t error_response_type = 255;
 constexpr std::uint32_t max_collection_size = 65536;
 
@@ -737,9 +739,12 @@ encode_request(const ControlRequest& request) {
         }
     } else if (std::holds_alternative<QueueRequest>(request)) {
         write_header(payload, queue_request_type);
-    } else {
+    } else if (const auto* status = std::get_if<StatusRequest>(&request)) {
         write_header(payload, status_request_type);
-        payload.integer64(std::get<StatusRequest>(request).job_id);
+        payload.integer64(status->job_id);
+    } else {
+        write_header(payload, cancel_request_type);
+        payload.integer64(std::get<CancelRequest>(request).job_id);
     }
 
     return finish_frame(std::move(payload));
@@ -779,6 +784,14 @@ decode_request(const std::vector<std::byte>& frame) {
         }
 
         request = StatusRequest{.job_id = *job_id};
+    } else if (*type == cancel_request_type) {
+        auto job_id = reader.integer64();
+
+        if (!job_id) {
+            return std::unexpected{std::move(job_id.error())};
+        }
+
+        request = CancelRequest{.job_id = *job_id};
     } else {
         return std::unexpected{
             error(ProtocolOperation::decode, "unknown control request type")};
@@ -819,6 +832,9 @@ encode_response(const ControlResponse& response) {
         if (auto encoded = encode_job(payload, status->job); !encoded) {
             return std::unexpected{std::move(encoded.error())};
         }
+    } else if (const auto* cancelled = std::get_if<CancelResponse>(&response)) {
+        write_header(payload, cancel_response_type);
+        payload.integer64(cancelled->job_id);
     } else {
         write_header(payload, error_response_type);
 
@@ -890,6 +906,14 @@ decode_response(const std::vector<std::byte>& frame) {
         }
 
         response = StatusResponse{.job = std::move(*job)};
+    } else if (*type == cancel_response_type) {
+        auto job_id = reader.integer64();
+
+        if (!job_id) {
+            return std::unexpected{std::move(job_id.error())};
+        }
+
+        response = CancelResponse{.job_id = *job_id};
     } else if (*type == error_response_type) {
         auto message = reader.text();
 
