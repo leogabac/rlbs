@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 
+#include <rlbs/core/job_result.hpp>
 #include <rlbs/core/job_spec.hpp>
 #include <rlbs/core/types.hpp>
 
@@ -24,6 +25,7 @@ struct Job {
     JobSpec spec;
     JobState state{JobState::pending};
     std::optional<NodeId> assigned_node;
+    std::optional<JobResult> result;
 };
 
 [[nodiscard]] bool is_terminal(JobState state);

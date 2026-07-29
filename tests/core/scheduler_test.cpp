@@ -44,6 +44,7 @@ rlbs::Job make_job(
         .spec = std::move(spec),
         .state = rlbs::JobState::pending,
         .assigned_node = std::nullopt,
+        .result = std::nullopt,
     };
 }
 

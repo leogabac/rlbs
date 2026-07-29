@@ -8,6 +8,7 @@
 
 #include <sys/types.h>
 
+#include <rlbs/core/job_result.hpp>
 #include <rlbs/core/job_spec.hpp>
 
 namespace rlbs {
@@ -22,11 +23,8 @@ struct ProcessSpec {
     bool append_output{false};
 };
 
-struct ProcessResult {
-    std::optional<int> exit_code;
-    std::optional<int> terminating_signal;
-    bool dumped_core{false};
-};
+// keep the runner name readable while storing the exact same type on a job
+using ProcessResult = JobResult;
 
 enum class ProcessOperation {
     validate,
