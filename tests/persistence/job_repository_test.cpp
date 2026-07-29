@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include <sqlite3.h>
 #include <unistd.h>
 
 namespace {
@@ -232,12 +233,216 @@ void test_failed_submission_rolls_back() {
            "rolled back job does not consume a queue position");
 }
 
+void test_transitions_store_results_and_events() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "transitions.db");
+
+    expect(database.has_value(), "transition database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(example_spec("transitioned"));
+
+    expect(submitted.has_value(), "transition job submits");
+
+    if (!submitted) {
+        return;
+    }
+
+    const auto assigned = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::assigned,
+                           .assigned_node = "local",
+                           .result = std::nullopt,
+                           .detail = "first-fit picked the local node",
+                       });
+    const auto starting = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::starting,
+                           .assigned_node = std::nullopt,
+                           .result = std::nullopt,
+                           .detail = std::nullopt,
+                       });
+    const auto running = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::running,
+                           .assigned_node = std::nullopt,
+                           .result = std::nullopt,
+                           .detail = std::nullopt,
+                       });
+    const auto completed = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::completed,
+                           .assigned_node = std::nullopt,
+                           .result =
+                               rlbs::JobResult{
+                                   .exit_code = 7,
+                                   .terminating_signal = std::nullopt,
+                                   .dumped_core = false,
+                               },
+                           .detail = "process exited",
+                       });
+
+    expect(assigned && assigned->assigned_node == "local",
+           "assigned transition stores its node");
+    expect(starting && starting->state == rlbs::JobState::starting,
+           "starting transition succeeds");
+    expect(running && running->state == rlbs::JobState::running,
+           "running transition succeeds");
+    expect(completed && completed->state == rlbs::JobState::completed,
+           "completed transition succeeds");
+    expect(completed && completed->result && completed->result->exit_code == 7,
+           "completed transition returns its result");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded, "transitioned job reloads");
+
+    if (loaded && *loaded) {
+        expect((*loaded)->state == rlbs::JobState::completed,
+               "terminal state survives persistence");
+        expect((*loaded)->assigned_node == "local",
+               "assigned node survives later transitions");
+        expect((*loaded)->result && (*loaded)->result->exit_code == 7,
+               "process result survives persistence");
+    }
+
+    const auto events = repository.events(submitted->id);
+    expect(events && events->size() == 4,
+           "every successful transition creates one event");
+
+    if (events && events->size() == 4) {
+        expect((*events)[0].state == rlbs::JobState::assigned,
+               "event history starts with assignment");
+        expect((*events)[1].state == rlbs::JobState::starting,
+               "event history records startup");
+        expect((*events)[2].state == rlbs::JobState::running,
+               "event history records running");
+        expect((*events)[3].state == rlbs::JobState::completed,
+               "event history records completion");
+        expect((*events)[0].detail == "first-fit picked the local node",
+               "event detail survives persistence");
+        expect(!(*events)[0].occurred_at.empty(),
+               "event includes its database timestamp");
+    }
+
+    const auto pending = repository.pending();
+    expect(pending && pending->empty(),
+           "terminal job is no longer in the pending queue");
+}
+
+void test_invalid_transition_changes_nothing() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "invalid-state.db");
+
+    expect(database.has_value(), "invalid transition database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(example_spec("still pending"));
+
+    if (!submitted) {
+        expect(false, "invalid transition fixture submits");
+        return;
+    }
+
+    const auto rejected = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::running,
+                           .assigned_node = std::nullopt,
+                           .result = std::nullopt,
+                           .detail = std::nullopt,
+                       });
+    expect(!rejected, "pending job cannot jump straight to running");
+    expect(!rejected && rejected.error().operation ==
+                            rlbs::RepositoryOperation::validate_transition,
+           "invalid state change reports transition validation");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded && (*loaded)->state == rlbs::JobState::pending,
+           "rejected transition leaves the job pending");
+
+    const auto events = repository.events(submitted->id);
+    expect(events && events->empty(),
+           "rejected transition does not create an event");
+}
+
+void test_event_failure_rolls_back_state() {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path() / "event-rollback.db";
+    auto database = rlbs::SqliteDatabase::open(path);
+
+    expect(database.has_value(), "event rollback database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(example_spec("atomic transition"));
+
+    if (!submitted) {
+        expect(false, "event rollback fixture submits");
+        return;
+    }
+
+    sqlite3* setup = nullptr;
+    const int opened = sqlite3_open(path.c_str(), &setup);
+    expect(opened == SQLITE_OK, "event failure setup opens");
+
+    if (opened != SQLITE_OK) {
+        if (setup != nullptr) {
+            static_cast<void>(sqlite3_close(setup));
+        }
+        return;
+    }
+
+    constexpr const char* trigger = R"sql(
+CREATE TRIGGER reject_job_event
+BEFORE INSERT ON job_events
+BEGIN
+    SELECT RAISE(ABORT, 'event blocked for rollback test');
+END;
+)sql";
+    expect(sqlite3_exec(setup, trigger, nullptr, nullptr, nullptr) == SQLITE_OK,
+           "event failure trigger installs");
+    static_cast<void>(sqlite3_close(setup));
+
+    const auto rejected = repository.transition(
+        submitted->id, {
+                           .state = rlbs::JobState::assigned,
+                           .assigned_node = "local",
+                           .result = std::nullopt,
+                           .detail = std::nullopt,
+                       });
+    expect(!rejected, "event insert failure rejects the transition");
+    expect(!rejected && rejected.error().operation ==
+                            rlbs::RepositoryOperation::insert_event,
+           "event insert failure reports the event operation");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded && (*loaded)->state == rlbs::JobState::pending,
+           "failed event insert rolls the state update back");
+    expect(loaded && *loaded && !(*loaded)->assigned_node,
+           "failed event insert rolls the node assignment back");
+}
+
 } // namespace
 
 int main() {
     test_submit_find_and_reopen();
     test_pending_jobs_keep_fifo_order();
     test_failed_submission_rolls_back();
+    test_transitions_store_results_and_events();
+    test_invalid_transition_changes_nothing();
+    test_event_failure_rolls_back_state();
 
     if (failures == 0) {
         std::cout << "all job repository tests passed\n";

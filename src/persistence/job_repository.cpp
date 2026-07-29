@@ -114,6 +114,23 @@ bind_text(sqlite3* connection, sqlite3_stmt* statement, int position,
 }
 
 [[nodiscard]] std::expected<void, RepositoryError>
+bind_optional_text(sqlite3* connection, sqlite3_stmt* statement, int position,
+                   const std::optional<std::string>& value,
+                   RepositoryOperation operation) {
+    if (!value) {
+        const int result = sqlite3_bind_null(statement, position);
+
+        if (result != SQLITE_OK) {
+            return std::unexpected{error(connection, operation, result)};
+        }
+
+        return {};
+    }
+
+    return bind_text(connection, statement, position, *value, operation);
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
 bind_optional_path(sqlite3* connection, sqlite3_stmt* statement, int position,
                    const std::optional<std::filesystem::path>& path,
                    RepositoryOperation operation) {
@@ -193,6 +210,214 @@ optional_column_integer(sqlite3_stmt* statement, int column) {
     }
 
     return std::nullopt;
+}
+
+[[nodiscard]] const char* encode_state(JobState state) {
+    switch (state) {
+    case JobState::pending:
+        return "pending";
+    case JobState::assigned:
+        return "assigned";
+    case JobState::starting:
+        return "starting";
+    case JobState::running:
+        return "running";
+    case JobState::completed:
+        return "completed";
+    case JobState::failed:
+        return "failed";
+    case JobState::cancelled:
+        return "cancelled";
+    }
+
+    return "unknown";
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
+validate_transition(const Job& job, const JobTransition& update,
+                    sqlite3* connection) {
+    if (!can_transition(job.state, update.state)) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT, "job state transition is not allowed")};
+    }
+
+    if (update.state == JobState::assigned && !update.assigned_node) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT, "assigned job needs a node")};
+    }
+
+    if (update.assigned_node && update.state != JobState::assigned) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT,
+                  "node assignment only belongs on the assigned transition")};
+    }
+
+    if (update.result && !is_terminal(update.state)) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT,
+                  "process result only belongs on a terminal transition")};
+    }
+
+    if (update.state == JobState::completed && !update.result) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT, "completed job needs a process result")};
+    }
+
+    if (update.result && update.result->exit_code &&
+        update.result->terminating_signal) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT,
+                  "process result cannot contain an exit code and a signal")};
+    }
+
+    if (update.result && !update.result->exit_code &&
+        !update.result->terminating_signal) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_transition,
+                  SQLITE_CONSTRAINT,
+                  "process result needs an exit code or a signal")};
+    }
+
+    if (update.result && update.result->dumped_core &&
+        !update.result->terminating_signal) {
+        return std::unexpected{error(
+            connection, RepositoryOperation::validate_transition,
+            SQLITE_CONSTRAINT, "core dump result needs a terminating signal")};
+    }
+
+    return {};
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
+update_job_row(sqlite3* connection, const Job& job,
+               const JobTransition& update) {
+    constexpr const char* sql = R"sql(
+UPDATE jobs
+SET
+    state = ?,
+    assigned_node = COALESCE(?, assigned_node),
+    exit_code = ?,
+    terminating_signal = ?,
+    dumped_core = ?
+WHERE id = ? AND state = ?;
+)sql";
+    auto statement = prepare(connection, sql, RepositoryOperation::update_job);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    auto* raw = statement->get();
+    const auto operation = RepositoryOperation::update_job;
+
+    if (auto result = bind_text(connection, raw, 1, encode_state(update.state),
+                                operation);
+        !result) {
+        return result;
+    }
+    if (auto result = bind_optional_text(connection, raw, 2,
+                                         update.assigned_node, operation);
+        !result) {
+        return result;
+    }
+
+    const auto bind_optional_integer =
+        [connection, raw, operation](int position,
+                                     const std::optional<int>& value)
+        -> std::expected<void, RepositoryError> {
+        if (!value) {
+            const int result = sqlite3_bind_null(raw, position);
+
+            if (result != SQLITE_OK) {
+                return std::unexpected{error(connection, operation, result)};
+            }
+
+            return {};
+        }
+
+        return bind_integer(connection, raw, position, *value, operation);
+    };
+
+    const auto exit_code =
+        update.result ? update.result->exit_code : std::optional<int>{};
+    const auto terminating_signal = update.result
+                                        ? update.result->terminating_signal
+                                        : std::optional<int>{};
+
+    if (auto result = bind_optional_integer(3, exit_code); !result) {
+        return result;
+    }
+    if (auto result = bind_optional_integer(4, terminating_signal); !result) {
+        return result;
+    }
+    if (auto result = bind_integer(
+            connection, raw, 5,
+            update.result && update.result->dumped_core ? 1 : 0, operation);
+        !result) {
+        return result;
+    }
+    if (auto result = bind_integer(
+            connection, raw, 6, static_cast<std::int64_t>(job.id), operation);
+        !result) {
+        return result;
+    }
+    if (auto result =
+            bind_text(connection, raw, 7, encode_state(job.state), operation);
+        !result) {
+        return result;
+    }
+    if (auto result = step_done(connection, raw, operation); !result) {
+        return result;
+    }
+
+    // matching the old state in the update keeps two callers from both
+    // "winning" the same transition if that ever happens later
+    if (sqlite3_changes(connection) != 1) {
+        return std::unexpected{
+            error(connection, operation, SQLITE_BUSY,
+                  "job changed while its transition was being stored")};
+    }
+
+    return {};
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
+insert_event(sqlite3* connection, JobId job_id, const JobTransition& update) {
+    auto statement = prepare(
+        connection,
+        "INSERT INTO job_events (job_id, state, detail) VALUES (?, ?, ?);",
+        RepositoryOperation::insert_event);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    auto* raw = statement->get();
+    const auto operation = RepositoryOperation::insert_event;
+
+    if (auto result = bind_integer(
+            connection, raw, 1, static_cast<std::int64_t>(job_id), operation);
+        !result) {
+        return result;
+    }
+    if (auto result = bind_text(connection, raw, 2, encode_state(update.state),
+                                operation);
+        !result) {
+        return result;
+    }
+    if (auto result =
+            bind_optional_text(connection, raw, 3, update.detail, operation);
+        !result) {
+        return result;
+    }
+
+    return step_done(connection, raw, operation);
 }
 
 [[nodiscard]] std::expected<std::uint64_t, RepositoryError>
@@ -695,6 +920,115 @@ JobRepository::pending() const {
     }
 
     return jobs;
+}
+
+std::expected<Job, RepositoryError>
+JobRepository::transition(JobId id, const JobTransition& update) {
+    if (auto begun = execute(connection_, "BEGIN IMMEDIATE;",
+                             RepositoryOperation::begin_transaction);
+        !begun) {
+        return std::unexpected{std::move(begun.error())};
+    }
+
+    auto stored = find(id);
+
+    if (!stored) {
+        rollback(connection_);
+        return std::unexpected{std::move(stored.error())};
+    }
+
+    if (!*stored) {
+        rollback(connection_);
+        return std::unexpected{error(connection_,
+                                     RepositoryOperation::validate_transition,
+                                     SQLITE_NOTFOUND, "job does not exist")};
+    }
+
+    Job job = std::move(**stored);
+
+    if (auto valid = validate_transition(job, update, connection_); !valid) {
+        rollback(connection_);
+        return std::unexpected{std::move(valid.error())};
+    }
+
+    if (auto updated = update_job_row(connection_, job, update); !updated) {
+        rollback(connection_);
+        return std::unexpected{std::move(updated.error())};
+    }
+
+    if (auto inserted = insert_event(connection_, id, update); !inserted) {
+        rollback(connection_);
+        return std::unexpected{std::move(inserted.error())};
+    }
+
+    if (auto committed = execute(connection_, "COMMIT;",
+                                 RepositoryOperation::commit_transaction);
+        !committed) {
+        rollback(connection_);
+        return std::unexpected{std::move(committed.error())};
+    }
+
+    job.state = update.state;
+
+    if (update.assigned_node) {
+        job.assigned_node = update.assigned_node;
+    }
+
+    job.result = update.result;
+    return job;
+}
+
+std::expected<std::vector<JobEvent>, RepositoryError>
+JobRepository::events(JobId id) const {
+    if (id > static_cast<JobId>(std::numeric_limits<std::int64_t>::max())) {
+        return std::vector<JobEvent>{};
+    }
+
+    auto statement =
+        prepare(connection_,
+                "SELECT id, occurred_at, state, detail FROM job_events "
+                "WHERE job_id = ? ORDER BY id;",
+                RepositoryOperation::read_events);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    if (auto bound = bind_integer(connection_, statement->get(), 1,
+                                  static_cast<std::int64_t>(id),
+                                  RepositoryOperation::read_events);
+        !bound) {
+        return std::unexpected{std::move(bound.error())};
+    }
+
+    std::vector<JobEvent> events;
+    int result = SQLITE_ROW;
+
+    while ((result = sqlite3_step(statement->get())) == SQLITE_ROW) {
+        const auto state = decode_state(column_text(statement->get(), 2));
+
+        if (!state) {
+            return std::unexpected{
+                error(connection_, RepositoryOperation::read_events,
+                      SQLITE_CORRUPT, "event contains an unknown state")};
+        }
+
+        events.push_back({
+            .id = static_cast<std::uint64_t>(
+                sqlite3_column_int64(statement->get(), 0)),
+            .job_id = id,
+            .occurred_at = column_text(statement->get(), 1),
+            .state = *state,
+            .detail = optional_column_text(statement->get(), 3),
+        });
+    }
+
+    if (result != SQLITE_DONE) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_events, result)};
+    }
+
+    return events;
 }
 
 } // namespace rlbs

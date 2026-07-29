@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
@@ -22,12 +23,31 @@ enum class RepositoryOperation {
     read_job,
     read_arguments,
     read_environment,
+    validate_transition,
+    update_job,
+    insert_event,
+    read_events,
 };
 
 struct RepositoryError {
     RepositoryOperation operation{RepositoryOperation::read_job};
     int sqlite_code{0};
     std::string message;
+};
+
+struct JobTransition {
+    JobState state{JobState::pending};
+    std::optional<NodeId> assigned_node;
+    std::optional<JobResult> result;
+    std::optional<std::string> detail;
+};
+
+struct JobEvent {
+    std::uint64_t id{0};
+    JobId job_id{0};
+    std::string occurred_at;
+    JobState state{JobState::pending};
+    std::optional<std::string> detail;
 };
 
 // the database still owns the connection; this just gives job-shaped methods
@@ -44,6 +64,12 @@ class JobRepository {
 
     [[nodiscard]] std::expected<std::vector<Job>, RepositoryError>
     pending() const;
+
+    [[nodiscard]] std::expected<Job, RepositoryError>
+    transition(JobId id, const JobTransition& update);
+
+    [[nodiscard]] std::expected<std::vector<JobEvent>, RepositoryError>
+    events(JobId id) const;
 
   private:
     sqlite3* connection_{nullptr};

@@ -54,6 +54,7 @@ target_include_directories(rlbs_persistence
 
 target_link_libraries(rlbs_persistence
     PRIVATE
+        rlbs_core
         SQLite3::SQLite3
 )
 
@@ -137,6 +138,7 @@ if(BUILD_TESTING)
     target_link_libraries(rlbs_job_repository_tests
         PRIVATE
             rlbs_persistence
+            SQLite3::SQLite3
     )
 
     add_test(
