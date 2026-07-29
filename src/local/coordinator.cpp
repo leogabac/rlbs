@@ -59,11 +59,16 @@ LocalCoordinator::LocalCoordinator(JobRepository& repository, Node local_node,
     nodes_.push_back(std::move(local_node));
 }
 
-std::expected<void, LocalCoordinatorError> LocalCoordinator::tick() {
+std::expected<void, LocalCoordinatorError>
+LocalCoordinator::tick(bool start_new_jobs) {
     // finished jobs free resources first, otherwise a full node would waste a
     // whole tick pretending the next queued job still cannot fit
     if (auto reaped = reap_finished(); !reaped) {
         return reaped;
+    }
+
+    if (!start_new_jobs) {
+        return {};
     }
 
     return start_next();

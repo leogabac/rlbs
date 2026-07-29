@@ -40,7 +40,8 @@ class LocalCoordinator {
     LocalCoordinator(JobRepository& repository, Node local_node,
                      const SchedulingPolicy& scheduler);
 
-    [[nodiscard]] std::expected<void, LocalCoordinatorError> tick();
+    [[nodiscard]] std::expected<void, LocalCoordinatorError>
+    tick(bool start_new_jobs = true);
 
     [[nodiscard]] std::size_t active_job_count() const;
     [[nodiscard]] const Node& local_node() const;

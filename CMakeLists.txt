@@ -74,6 +74,20 @@ target_link_libraries(rlbs_local
         rlbs_persistence
 )
 
+add_library(rlbs_daemon
+    src/daemon/config.cpp
+)
+
+target_include_directories(rlbs_daemon
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rlbs_daemon
+    PUBLIC
+        rlbs_core
+)
+
 add_executable(rlbs
     apps/rlbs/main.cpp
 )
@@ -89,7 +103,9 @@ add_executable(rlbsd
 
 target_link_libraries(rlbsd
     PRIVATE
-        rlbs_core
+        rlbs_daemon
+        rlbs_local
+        rlbs_persistence
 )
 
 add_executable(rlbs-agent
@@ -176,9 +192,25 @@ if(BUILD_TESTING)
         COMMAND rlbs_local_tests
     )
 
+    add_executable(rlbs_daemon_tests
+        tests/daemon/daemon_test.cpp
+    )
+
+    target_link_libraries(rlbs_daemon_tests
+        PRIVATE
+            rlbs_daemon
+            rlbs_persistence
+    )
+
+    add_test(
+        NAME rlbs_daemon_tests
+        COMMAND rlbs_daemon_tests $<TARGET_FILE:rlbsd>
+    )
+
     set_tests_properties(
         rlbs_execution_tests
         rlbs_local_tests
+        rlbs_daemon_tests
         PROPERTIES
             TIMEOUT 10
     )
