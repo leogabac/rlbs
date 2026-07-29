@@ -8,6 +8,8 @@ struct sqlite3;
 
 namespace rlbs {
 
+class JobRepository;
+
 enum class DatabaseOperation {
     open,
     configure,
@@ -39,6 +41,8 @@ class SqliteDatabase {
     foreign_keys_enabled() const;
 
   private:
+    friend class JobRepository;
+
     explicit SqliteDatabase(sqlite3* connection);
 
     [[nodiscard]] std::expected<void, DatabaseError> configure();

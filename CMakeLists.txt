@@ -44,6 +44,7 @@ target_include_directories(rlbs_execution
 
 add_library(rlbs_persistence
     src/persistence/database.cpp
+    src/persistence/job_repository.cpp
 )
 
 target_include_directories(rlbs_persistence
@@ -127,6 +128,20 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_persistence_tests
         COMMAND rlbs_persistence_tests
+    )
+
+    add_executable(rlbs_job_repository_tests
+        tests/persistence/job_repository_test.cpp
+    )
+
+    target_link_libraries(rlbs_job_repository_tests
+        PRIVATE
+            rlbs_persistence
+    )
+
+    add_test(
+        NAME rlbs_job_repository_tests
+        COMMAND rlbs_job_repository_tests
     )
 
     set_tests_properties(
