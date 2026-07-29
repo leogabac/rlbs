@@ -1,10 +1,12 @@
 #include <csignal>
+#include <cstring>
 #include <iostream>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <rlbs/control/unix_socket.hpp>
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 #include <rlbs/core/version.hpp>
@@ -55,6 +57,20 @@ int main(int argc, char* argv[]) {
     }
 
     rlbs::JobRepository repository{*database};
+    auto control = rlbs::ControlServer::listen(config->socket_path, repository);
+
+    if (!control) {
+        std::cerr << "rlbsd: could not open control socket: "
+                  << control.error().message;
+
+        if (control.error().system_error != 0) {
+            std::cerr << ": " << std::strerror(control.error().system_error);
+        }
+
+        std::cerr << '\n';
+        return 1;
+    }
+
     rlbs::FirstFitScheduler scheduler;
     rlbs::Node local_node{config->node_id, config->capacity, config->reserved};
     rlbs::LocalCoordinator coordinator{
@@ -67,9 +83,18 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, request_stop);
 
     std::cout << "starting " << rlbs::project_name() << " daemon "
-              << rlbs::version() << " on node " << config->node_id << '\n';
+              << rlbs::version() << " on node " << config->node_id << " using "
+              << config->socket_path << '\n';
 
     while (stop_requested == 0) {
+        auto handled = control->poll();
+
+        if (!handled) {
+            std::cerr << "rlbsd: control socket failed: "
+                      << handled.error().message << '\n';
+            return 1;
+        }
+
         auto ticked = coordinator.tick();
 
         if (!ticked) {
@@ -80,6 +105,10 @@ int main(int argc, char* argv[]) {
 
         std::this_thread::sleep_for(config->tick_interval);
     }
+
+    // stop accepting new submissions before draining active jobs. otherwise a
+    // client could sneak more work in after shutdown already started
+    control->close();
 
     // once shutdown starts, do not pull another job from the queue. already
     // running work still gets polled until it exits so we do not orphan it

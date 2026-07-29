@@ -14,6 +14,7 @@ namespace rlbs {
 
 struct DaemonConfig {
     std::filesystem::path database_path{"rlbs.db"};
+    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
     NodeId node_id{"local"};
     ResourceCapacity capacity{
         .cpus = 1,

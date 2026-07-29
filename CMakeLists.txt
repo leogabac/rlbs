@@ -58,6 +58,22 @@ target_link_libraries(rlbs_persistence
         SQLite3::SQLite3
 )
 
+add_library(rlbs_control
+    src/control/protocol.cpp
+    src/control/unix_socket.cpp
+)
+
+target_include_directories(rlbs_control
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rlbs_control
+    PUBLIC
+        rlbs_core
+        rlbs_persistence
+)
+
 add_library(rlbs_local
     src/local/coordinator.cpp
 )
@@ -103,6 +119,7 @@ add_executable(rlbsd
 
 target_link_libraries(rlbsd
     PRIVATE
+        rlbs_control
         rlbs_daemon
         rlbs_local
         rlbs_persistence
@@ -198,6 +215,7 @@ if(BUILD_TESTING)
 
     target_link_libraries(rlbs_daemon_tests
         PRIVATE
+            rlbs_control
             rlbs_daemon
             rlbs_persistence
     )
@@ -205,6 +223,20 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_daemon_tests
         COMMAND rlbs_daemon_tests $<TARGET_FILE:rlbsd>
+    )
+
+    add_executable(rlbs_control_tests
+        tests/control/protocol_test.cpp
+    )
+
+    target_link_libraries(rlbs_control_tests
+        PRIVATE
+            rlbs_control
+    )
+
+    add_test(
+        NAME rlbs_control_tests
+        COMMAND rlbs_control_tests
     )
 
     set_tests_properties(

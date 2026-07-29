@@ -1,3 +1,4 @@
+#include <rlbs/control/unix_socket.hpp>
 #include <rlbs/daemon/config.hpp>
 #include <rlbs/persistence/database.hpp>
 #include <rlbs/persistence/job_repository.hpp>
@@ -119,6 +120,8 @@ void test_config_parser() {
         "/tmp/custom.db",
         "--node-id",
         "head",
+        "--socket",
+        "/tmp/custom.sock",
         "--cpus",
         "12",
         "--memory-mb",
@@ -142,6 +145,7 @@ void test_config_parser() {
         expect(parsed->database_path == "/tmp/custom.db",
                "database path parses");
         expect(parsed->node_id == "head", "node id parses");
+        expect(parsed->socket_path == "/tmp/custom.sock", "socket path parses");
         expect(parsed->capacity.cpus == 12, "cpu capacity parses");
         expect(parsed->capacity.memory_mb == 64000, "memory capacity parses");
         expect(parsed->capacity.gpus == 2, "gpu capacity parses");
@@ -169,6 +173,7 @@ void test_config_parser() {
 void test_real_daemon_runs_seeded_job(const std::filesystem::path& executable) {
     TemporaryDirectory temporary;
     const auto database_path = temporary.path() / "rlbs.db";
+    const auto socket_path = temporary.path() / "rlbs.sock";
     auto database = rlbs::SqliteDatabase::open(database_path);
 
     expect(database.has_value(), "daemon integration database opens");
@@ -178,7 +183,42 @@ void test_real_daemon_runs_seeded_job(const std::filesystem::path& executable) {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto submitted = repository.submit({
+    const pid_t child = ::fork();
+
+    if (child == 0) {
+        ::execl(executable.c_str(), executable.c_str(), "--database",
+                database_path.c_str(), "--socket", socket_path.c_str(),
+                "--cpus", "2", "--memory-mb", "4096", "--tick-ms", "5",
+                static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+
+    expect(child > 0, "daemon process starts");
+
+    if (child <= 0) {
+        return;
+    }
+
+    DaemonProcess daemon{child};
+    bool socket_ready = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        if (std::filesystem::exists(socket_path)) {
+            socket_ready = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(socket_ready, "real rlbsd creates its control socket");
+
+    if (!socket_ready) {
+        return;
+    }
+
+    rlbs::ControlClient client{socket_path};
+    const auto submitted = client.submit({
         .name = "daemon job",
         .resources =
             {
@@ -195,32 +235,16 @@ void test_real_daemon_runs_seeded_job(const std::filesystem::path& executable) {
         .append_output = false,
     });
 
-    expect(submitted.has_value(), "daemon integration job submits");
+    expect(submitted.has_value(), "socket client submits through real rlbsd");
 
     if (!submitted) {
         return;
     }
 
-    const pid_t child = ::fork();
-
-    if (child == 0) {
-        ::execl(executable.c_str(), executable.c_str(), "--database",
-                database_path.c_str(), "--cpus", "2", "--memory-mb", "4096",
-                "--tick-ms", "5", static_cast<char*>(nullptr));
-        ::_exit(127);
-    }
-
-    expect(child > 0, "daemon process starts");
-
-    if (child <= 0) {
-        return;
-    }
-
-    DaemonProcess daemon{child};
     bool completed = false;
 
     for (int attempt = 0; attempt < 400; ++attempt) {
-        const auto loaded = repository.find(submitted->id);
+        const auto loaded = repository.find(*submitted);
 
         if (loaded && *loaded &&
             (*loaded)->state == rlbs::JobState::completed) {

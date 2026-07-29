@@ -1,0 +1,576 @@
+#include <rlbs/control/protocol.hpp>
+
+#include <limits>
+#include <optional>
+#include <string_view>
+#include <utility>
+
+namespace rlbs {
+namespace {
+
+constexpr std::uint32_t protocol_magic = 0x524c4253;
+constexpr std::uint16_t protocol_version = 1;
+constexpr std::uint8_t submit_request_type = 1;
+constexpr std::uint8_t submit_response_type = 129;
+constexpr std::uint8_t error_response_type = 255;
+constexpr std::uint32_t max_collection_size = 65536;
+
+[[nodiscard]] ProtocolError error(ProtocolOperation operation,
+                                  std::string message) {
+    return {
+        .operation = operation,
+        .message = std::move(message),
+    };
+}
+
+class Writer {
+  public:
+    // multi-byte integers go out most-significant byte first. host byte order
+    // varies by cpu, so copying raw integers would make the protocol depend on
+    // whichever machine compiled rlbs, because apparently we need that trap too
+    void integer8(std::uint8_t value) {
+        bytes_.push_back(static_cast<std::byte>(value));
+    }
+
+    void integer16(std::uint16_t value) {
+        integer8(static_cast<std::uint8_t>((value >> 8) & 0xff));
+        integer8(static_cast<std::uint8_t>(value & 0xff));
+    }
+
+    void integer32(std::uint32_t value) {
+        integer8(static_cast<std::uint8_t>((value >> 24) & 0xff));
+        integer8(static_cast<std::uint8_t>((value >> 16) & 0xff));
+        integer8(static_cast<std::uint8_t>((value >> 8) & 0xff));
+        integer8(static_cast<std::uint8_t>(value & 0xff));
+    }
+
+    void integer64(std::uint64_t value) {
+        integer32(static_cast<std::uint32_t>(value >> 32));
+        integer32(static_cast<std::uint32_t>(value & 0xffffffff));
+    }
+
+    [[nodiscard]] std::expected<void, ProtocolError>
+    text(std::string_view value) {
+        if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+            return std::unexpected{
+                error(ProtocolOperation::encode, "string is too large")};
+        }
+
+        // strings are length plus raw bytes, not null-terminated c strings.
+        // spaces, newlines, and embedded nulls therefore need no escaping
+        integer32(static_cast<std::uint32_t>(value.size()));
+
+        if (!value.empty()) {
+            const auto* begin =
+                reinterpret_cast<const std::byte*>(value.data());
+            bytes_.insert(bytes_.end(), begin, begin + value.size());
+        }
+
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, ProtocolError>
+    optional_text(const std::optional<std::filesystem::path>& value) {
+        integer8(value ? 1 : 0);
+
+        if (!value) {
+            return {};
+        }
+
+        return text(value->string());
+    }
+
+    void append(const std::vector<std::byte>& bytes) {
+        bytes_.insert(bytes_.end(), bytes.begin(), bytes.end());
+    }
+
+    [[nodiscard]] const std::vector<std::byte>& bytes() const { return bytes_; }
+    [[nodiscard]] std::vector<std::byte> take() { return std::move(bytes_); }
+
+  private:
+    std::vector<std::byte> bytes_;
+};
+
+class Reader {
+  public:
+    explicit Reader(const std::vector<std::byte>& bytes) : bytes_{bytes} {}
+
+    [[nodiscard]] std::expected<std::uint8_t, ProtocolError> integer8() {
+        // every read checks what remains before advancing position_. missing
+        // one check here turns a malformed packet into an out-of-bounds read
+        if (remaining() < 1) {
+            return truncated();
+        }
+
+        return std::to_integer<std::uint8_t>(bytes_[position_++]);
+    }
+
+    [[nodiscard]] std::expected<std::uint16_t, ProtocolError> integer16() {
+        auto high = integer8();
+        auto low = integer8();
+
+        if (!high) {
+            return std::unexpected{std::move(high.error())};
+        }
+        if (!low) {
+            return std::unexpected{std::move(low.error())};
+        }
+
+        return static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(*high) << 8) | *low);
+    }
+
+    [[nodiscard]] std::expected<std::uint32_t, ProtocolError> integer32() {
+        if (remaining() < 4) {
+            return truncated();
+        }
+
+        std::uint32_t value = 0;
+
+        for (int byte = 0; byte < 4; ++byte) {
+            value = (value << 8) |
+                    std::to_integer<std::uint8_t>(bytes_[position_++]);
+        }
+
+        return value;
+    }
+
+    [[nodiscard]] std::expected<std::uint64_t, ProtocolError> integer64() {
+        auto high = integer32();
+        auto low = integer32();
+
+        if (!high) {
+            return std::unexpected{std::move(high.error())};
+        }
+        if (!low) {
+            return std::unexpected{std::move(low.error())};
+        }
+
+        return (static_cast<std::uint64_t>(*high) << 32) | *low;
+    }
+
+    [[nodiscard]] std::expected<std::string, ProtocolError> text() {
+        auto size = integer32();
+
+        if (!size) {
+            return std::unexpected{std::move(size.error())};
+        }
+        if (*size > remaining()) {
+            return truncated();
+        }
+
+        const auto* begin =
+            reinterpret_cast<const char*>(bytes_.data() + position_);
+        std::string value{begin, static_cast<std::size_t>(*size)};
+        position_ += *size;
+        return value;
+    }
+
+    [[nodiscard]] std::expected<std::optional<std::filesystem::path>,
+                                ProtocolError>
+    optional_path() {
+        auto present = integer8();
+
+        if (!present) {
+            return std::unexpected{std::move(present.error())};
+        }
+        if (*present > 1) {
+            return std::unexpected{error(ProtocolOperation::decode,
+                                         "optional flag is not boolean")};
+        }
+        if (*present == 0) {
+            return std::optional<std::filesystem::path>{};
+        }
+
+        auto value = text();
+
+        if (!value) {
+            return std::unexpected{std::move(value.error())};
+        }
+
+        return std::optional<std::filesystem::path>{
+            std::filesystem::path{std::move(*value)}};
+    }
+
+    [[nodiscard]] std::size_t remaining() const {
+        return bytes_.size() - position_;
+    }
+
+  private:
+    [[nodiscard]] std::unexpected<ProtocolError> truncated() const {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "control frame is truncated")};
+    }
+
+    const std::vector<std::byte>& bytes_;
+    std::size_t position_{0};
+};
+
+[[nodiscard]] std::expected<void, ProtocolError>
+encode_job_spec(Writer& writer, const JobSpec& spec) {
+    // cap counts separately from total bytes so a tiny packet cannot claim it
+    // contains four billion arguments and waste the daemon's afternoon
+    if (spec.argv.size() > max_collection_size ||
+        spec.environment.size() > max_collection_size) {
+        return std::unexpected{
+            error(ProtocolOperation::encode, "job collection is too large")};
+    }
+
+    if (auto written = writer.text(spec.name); !written) {
+        return written;
+    }
+
+    writer.integer32(spec.resources.cpus);
+    writer.integer64(spec.resources.memory_mb);
+    writer.integer32(spec.resources.gpus);
+    writer.integer32(static_cast<std::uint32_t>(spec.argv.size()));
+
+    for (const auto& argument : spec.argv) {
+        if (auto written = writer.text(argument); !written) {
+            return written;
+        }
+    }
+
+    if (auto written = writer.text(spec.working_directory.string()); !written) {
+        return written;
+    }
+
+    writer.integer32(static_cast<std::uint32_t>(spec.environment.size()));
+
+    for (const auto& variable : spec.environment) {
+        if (auto written = writer.text(variable.name); !written) {
+            return written;
+        }
+        if (auto written = writer.text(variable.value); !written) {
+            return written;
+        }
+    }
+
+    writer.integer8(spec.inherit_environment ? 1 : 0);
+
+    if (auto written = writer.optional_text(spec.stdout_path); !written) {
+        return written;
+    }
+    if (auto written = writer.optional_text(spec.stderr_path); !written) {
+        return written;
+    }
+
+    writer.integer8(spec.append_output ? 1 : 0);
+    return {};
+}
+
+[[nodiscard]] std::expected<JobSpec, ProtocolError>
+decode_job_spec(Reader& reader) {
+    // decode into temporary values first. jobspec only exists after every field
+    // passed its bounds and boolean checks, never as a half-decoded mystery
+    auto name = reader.text();
+    auto cpus = reader.integer32();
+    auto memory_mb = reader.integer64();
+    auto gpus = reader.integer32();
+    auto argument_count = reader.integer32();
+
+    if (!name) {
+        return std::unexpected{std::move(name.error())};
+    }
+    if (!cpus) {
+        return std::unexpected{std::move(cpus.error())};
+    }
+    if (!memory_mb) {
+        return std::unexpected{std::move(memory_mb.error())};
+    }
+    if (!gpus) {
+        return std::unexpected{std::move(gpus.error())};
+    }
+    if (!argument_count) {
+        return std::unexpected{std::move(argument_count.error())};
+    }
+    if (*argument_count > max_collection_size) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "argument list is too large")};
+    }
+
+    std::vector<std::string> arguments;
+    arguments.reserve(*argument_count);
+
+    for (std::uint32_t index = 0; index < *argument_count; ++index) {
+        auto argument = reader.text();
+
+        if (!argument) {
+            return std::unexpected{std::move(argument.error())};
+        }
+
+        arguments.push_back(std::move(*argument));
+    }
+
+    auto working_directory = reader.text();
+    auto environment_count = reader.integer32();
+
+    if (!working_directory) {
+        return std::unexpected{std::move(working_directory.error())};
+    }
+    if (!environment_count) {
+        return std::unexpected{std::move(environment_count.error())};
+    }
+    if (*environment_count > max_collection_size) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "environment is too large")};
+    }
+
+    std::vector<EnvironmentVariable> environment;
+    environment.reserve(*environment_count);
+
+    for (std::uint32_t index = 0; index < *environment_count; ++index) {
+        auto variable_name = reader.text();
+        auto variable_value = reader.text();
+
+        if (!variable_name) {
+            return std::unexpected{std::move(variable_name.error())};
+        }
+        if (!variable_value) {
+            return std::unexpected{std::move(variable_value.error())};
+        }
+
+        environment.push_back({
+            .name = std::move(*variable_name),
+            .value = std::move(*variable_value),
+        });
+    }
+
+    auto inherit_environment = reader.integer8();
+
+    if (!inherit_environment) {
+        return std::unexpected{std::move(inherit_environment.error())};
+    }
+    if (*inherit_environment > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "inherit flag is not boolean")};
+    }
+
+    auto stdout_path = reader.optional_path();
+    auto stderr_path = reader.optional_path();
+    auto append_output = reader.integer8();
+
+    if (!stdout_path) {
+        return std::unexpected{std::move(stdout_path.error())};
+    }
+    if (!stderr_path) {
+        return std::unexpected{std::move(stderr_path.error())};
+    }
+    if (!append_output) {
+        return std::unexpected{std::move(append_output.error())};
+    }
+    if (*append_output > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "append flag is not boolean")};
+    }
+
+    return JobSpec{
+        .name = std::move(*name),
+        .resources =
+            {
+                .cpus = *cpus,
+                .memory_mb = *memory_mb,
+                .gpus = *gpus,
+            },
+        .argv = std::move(arguments),
+        .working_directory = std::move(*working_directory),
+        .environment = std::move(environment),
+        .inherit_environment = *inherit_environment != 0,
+        .stdout_path = std::move(*stdout_path),
+        .stderr_path = std::move(*stderr_path),
+        .append_output = *append_output != 0,
+    };
+}
+
+[[nodiscard]] std::expected<std::vector<std::byte>, ProtocolError>
+finish_frame(Writer payload) {
+    // the first four bytes describe the payload length. seqpacket gives us a
+    // boundary today, but tcp is only a byte stream and will need this later
+    if (payload.bytes().size() >
+        max_control_frame_size - sizeof(std::uint32_t)) {
+        return std::unexpected{
+            error(ProtocolOperation::encode, "control frame is too large")};
+    }
+
+    Writer frame;
+    frame.integer32(static_cast<std::uint32_t>(payload.bytes().size()));
+    frame.append(payload.bytes());
+    return frame.take();
+}
+
+[[nodiscard]] std::expected<std::vector<std::byte>, ProtocolError>
+payload_from_frame(const std::vector<std::byte>& frame) {
+    // require the advertised length to match exactly. accepting "at least this
+    // much" would let junk trail a valid request and complicate every upgrade
+    if (frame.size() > max_control_frame_size) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "control frame is too large")};
+    }
+
+    Reader framed{frame};
+    auto payload_size = framed.integer32();
+
+    if (!payload_size) {
+        return std::unexpected{std::move(payload_size.error())};
+    }
+    if (*payload_size != framed.remaining()) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "control frame size is wrong")};
+    }
+
+    return std::vector<std::byte>{
+        frame.begin() + static_cast<std::ptrdiff_t>(sizeof(std::uint32_t)),
+        frame.end(),
+    };
+}
+
+[[nodiscard]] std::expected<std::uint8_t, ProtocolError>
+read_header(Reader& reader) {
+    // magic rejects random bytes, version rejects formats we do not understand,
+    // and type says which body follows. guessing any of these would be cute
+    auto magic = reader.integer32();
+    auto version = reader.integer16();
+    auto type = reader.integer8();
+
+    if (!magic) {
+        return std::unexpected{std::move(magic.error())};
+    }
+    if (!version) {
+        return std::unexpected{std::move(version.error())};
+    }
+    if (!type) {
+        return std::unexpected{std::move(type.error())};
+    }
+    if (*magic != protocol_magic) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "control frame magic is wrong")};
+    }
+    if (*version != protocol_version) {
+        return std::unexpected{
+            error(ProtocolOperation::decode,
+                  "control protocol version is unsupported")};
+    }
+
+    return *type;
+}
+
+void write_header(Writer& writer, std::uint8_t type) {
+    writer.integer32(protocol_magic);
+    writer.integer16(protocol_version);
+    writer.integer8(type);
+}
+
+} // namespace
+
+std::expected<std::vector<std::byte>, ProtocolError>
+encode_request(const ControlRequest& request) {
+    Writer payload;
+    write_header(payload, submit_request_type);
+    const auto& submit = std::get<SubmitRequest>(request);
+
+    if (auto encoded = encode_job_spec(payload, submit.spec); !encoded) {
+        return std::unexpected{std::move(encoded.error())};
+    }
+
+    return finish_frame(std::move(payload));
+}
+
+std::expected<ControlRequest, ProtocolError>
+decode_request(const std::vector<std::byte>& frame) {
+    auto payload = payload_from_frame(frame);
+
+    if (!payload) {
+        return std::unexpected{std::move(payload.error())};
+    }
+
+    Reader reader{*payload};
+    auto type = read_header(reader);
+
+    if (!type) {
+        return std::unexpected{std::move(type.error())};
+    }
+    if (*type != submit_request_type) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "unknown control request type")};
+    }
+
+    auto spec = decode_job_spec(reader);
+
+    if (!spec) {
+        return std::unexpected{std::move(spec.error())};
+    }
+    if (reader.remaining() != 0) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "control request has extra data")};
+    }
+
+    return ControlRequest{SubmitRequest{.spec = std::move(*spec)}};
+}
+
+std::expected<std::vector<std::byte>, ProtocolError>
+encode_response(const ControlResponse& response) {
+    Writer payload;
+
+    if (const auto* submitted = std::get_if<SubmitResponse>(&response)) {
+        write_header(payload, submit_response_type);
+        payload.integer64(submitted->job_id);
+    } else {
+        write_header(payload, error_response_type);
+
+        if (auto encoded =
+                payload.text(std::get<ErrorResponse>(response).message);
+            !encoded) {
+            return std::unexpected{std::move(encoded.error())};
+        }
+    }
+
+    return finish_frame(std::move(payload));
+}
+
+std::expected<ControlResponse, ProtocolError>
+decode_response(const std::vector<std::byte>& frame) {
+    auto payload = payload_from_frame(frame);
+
+    if (!payload) {
+        return std::unexpected{std::move(payload.error())};
+    }
+
+    Reader reader{*payload};
+    auto type = read_header(reader);
+
+    if (!type) {
+        return std::unexpected{std::move(type.error())};
+    }
+
+    ControlResponse response;
+
+    if (*type == submit_response_type) {
+        auto job_id = reader.integer64();
+
+        if (!job_id) {
+            return std::unexpected{std::move(job_id.error())};
+        }
+
+        response = SubmitResponse{.job_id = *job_id};
+    } else if (*type == error_response_type) {
+        auto message = reader.text();
+
+        if (!message) {
+            return std::unexpected{std::move(message.error())};
+        }
+
+        response = ErrorResponse{.message = std::move(*message)};
+    } else {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "unknown control response type")};
+    }
+
+    if (reader.remaining() != 0) {
+        return std::unexpected{error(ProtocolOperation::decode,
+                                     "control response has extra data")};
+    }
+
+    return response;
+}
+
+} // namespace rlbs

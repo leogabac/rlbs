@@ -57,6 +57,8 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
 
         if (option == "--database") {
             config.database_path = *value;
+        } else if (option == "--socket") {
+            config.socket_path = *value;
         } else if (option == "--node-id") {
             config.node_id = *value;
         } else if (option == "--cpus") {
@@ -119,6 +121,9 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
     if (config.database_path.empty()) {
         return std::unexpected{"--database cannot be empty"};
     }
+    if (config.socket_path.empty()) {
+        return std::unexpected{"--socket cannot be empty"};
+    }
     if (config.node_id.empty()) {
         return std::unexpected{"--node-id cannot be empty"};
     }
@@ -138,6 +143,7 @@ std::string_view daemon_usage() {
 
 options:
   --database PATH           sqlite database path (default: rlbs.db)
+  --socket PATH             unix control socket (default: /tmp/rlbs.sock)
   --node-id ID              local node name (default: local)
   --cpus N                  total local cpu capacity (default: 1)
   --memory-mb N             total local memory in mb (default: 0)
