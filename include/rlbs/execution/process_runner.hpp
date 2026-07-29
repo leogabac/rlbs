@@ -8,12 +8,9 @@
 
 #include <sys/types.h>
 
-namespace rlbs {
+#include <rlbs/core/job_spec.hpp>
 
-struct EnvironmentVariable {
-    std::string name;
-    std::string value;
-};
+namespace rlbs {
 
 struct ProcessSpec {
     std::vector<std::string> argv;

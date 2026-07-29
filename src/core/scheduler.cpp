@@ -53,7 +53,7 @@ std::vector<Assignment> FirstFitScheduler::schedule(
         for (auto* node : ordered_nodes) {
             //
             // gets an allocation with the resources you need
-            auto allocation = node->allocate(job->resources);
+            auto allocation = node->allocate(job->spec.resources);
 
             if (!allocation) {
                 continue;

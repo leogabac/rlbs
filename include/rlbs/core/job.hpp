@@ -2,9 +2,8 @@
 
 #include <cstdint>
 #include <optional>
-#include <string>
 
-#include <rlbs/core/resources.hpp>
+#include <rlbs/core/job_spec.hpp>
 #include <rlbs/core/types.hpp>
 
 namespace rlbs {
@@ -22,8 +21,7 @@ enum class JobState {
 struct Job {
     JobId id{0};
     std::uint64_t queue_sequence{0};
-    std::string name;
-    ResourceRequest resources;
+    JobSpec spec;
     JobState state{JobState::pending};
     std::optional<NodeId> assigned_node;
 };

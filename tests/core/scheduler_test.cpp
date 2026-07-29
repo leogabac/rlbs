@@ -2,11 +2,14 @@
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -22,16 +25,31 @@ void expect(bool condition, std::string_view message)
     }
 }
 
-void test_job_state_machine()
+// keep the scheduler tests focused on queue behavior instead of repeating the
+// submission fields that are irrelevant to each little resource check
+rlbs::Job make_job(
+    rlbs::JobId id,
+    std::uint64_t queue_sequence,
+    std::string name,
+    rlbs::ResourceRequest resources = {}
+)
 {
-    rlbs::Job job{
-        .id = 1,
-        .queue_sequence = 1,
-        .name = "state-test",
-        .resources = {},
+    rlbs::JobSpec spec;
+    spec.name = std::move(name);
+    spec.resources = resources;
+
+    return {
+        .id = id,
+        .queue_sequence = queue_sequence,
+        .spec = std::move(spec),
         .state = rlbs::JobState::pending,
         .assigned_node = std::nullopt,
     };
+}
+
+void test_job_state_machine()
+{
+    auto job = make_job(1, 1, "state-test");
 
     expect(
         !rlbs::transition(job, rlbs::JobState::running),
@@ -62,14 +80,7 @@ void test_job_state_machine()
         "terminal job cannot be cancelled again"
     );
 
-    rlbs::Job pending_job{
-        .id = 2,
-        .queue_sequence = 2,
-        .name = "cancel-test",
-        .resources = {},
-        .state = rlbs::JobState::pending,
-        .assigned_node = std::nullopt,
-    };
+    auto pending_job = make_job(2, 2, "cancel-test");
     expect(
         rlbs::transition(pending_job, rlbs::JobState::cancelled),
         "pending job can be cancelled"
@@ -157,22 +168,18 @@ void test_scheduler_is_fifo_and_deterministic()
     );
 
     std::vector<rlbs::Job> jobs{
-        {
-            .id = 2,
-            .queue_sequence = 2,
-            .name = "younger",
-            .resources = {.cpus = 2, .memory_mb = 1'000, .gpus = 0},
-            .state = rlbs::JobState::pending,
-            .assigned_node = std::nullopt,
-        },
-        {
-            .id = 1,
-            .queue_sequence = 1,
-            .name = "older",
-            .resources = {.cpus = 2, .memory_mb = 1'000, .gpus = 0},
-            .state = rlbs::JobState::pending,
-            .assigned_node = std::nullopt,
-        },
+        make_job(
+            2,
+            2,
+            "younger",
+            {.cpus = 2, .memory_mb = 1'000, .gpus = 0}
+        ),
+        make_job(
+            1,
+            1,
+            "older",
+            {.cpus = 2, .memory_mb = 1'000, .gpus = 0}
+        ),
     };
 
     const auto assignments = rlbs::FirstFitScheduler{}.schedule(jobs, nodes);
@@ -206,22 +213,18 @@ void test_strict_fifo_blocks_younger_jobs()
     );
 
     std::vector<rlbs::Job> jobs{
-        {
-            .id = 1,
-            .queue_sequence = 1,
-            .name = "too-large",
-            .resources = {.cpus = 8, .memory_mb = 1'000, .gpus = 0},
-            .state = rlbs::JobState::pending,
-            .assigned_node = std::nullopt,
-        },
-        {
-            .id = 2,
-            .queue_sequence = 2,
-            .name = "would-fit",
-            .resources = {.cpus = 1, .memory_mb = 1'000, .gpus = 0},
-            .state = rlbs::JobState::pending,
-            .assigned_node = std::nullopt,
-        },
+        make_job(
+            1,
+            1,
+            "too-large",
+            {.cpus = 8, .memory_mb = 1'000, .gpus = 0}
+        ),
+        make_job(
+            2,
+            2,
+            "would-fit",
+            {.cpus = 1, .memory_mb = 1'000, .gpus = 0}
+        ),
     };
 
     const auto assignments = rlbs::FirstFitScheduler{}.schedule(jobs, nodes);
@@ -247,14 +250,12 @@ void test_offline_nodes_are_skipped()
     nodes[0].set_state(rlbs::NodeState::offline);
 
     std::vector<rlbs::Job> jobs{
-        {
-            .id = 1,
-            .queue_sequence = 1,
-            .name = "online-only",
-            .resources = {.cpus = 1, .memory_mb = 1'000, .gpus = 0},
-            .state = rlbs::JobState::pending,
-            .assigned_node = std::nullopt,
-        },
+        make_job(
+            1,
+            1,
+            "online-only",
+            {.cpus = 1, .memory_mb = 1'000, .gpus = 0}
+        ),
     };
 
     const auto assignments = rlbs::FirstFitScheduler{}.schedule(jobs, nodes);
