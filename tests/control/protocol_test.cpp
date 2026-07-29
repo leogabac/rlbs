@@ -84,6 +84,28 @@ void test_submit_request_round_trip() {
            "request keeps append mode");
 }
 
+void test_query_requests_round_trip() {
+    const auto queue =
+        rlbs::encode_request(rlbs::ControlRequest{rlbs::QueueRequest{}});
+    const auto status = rlbs::encode_request(
+        rlbs::ControlRequest{rlbs::StatusRequest{.job_id = 73}});
+
+    expect(queue.has_value(), "queue request encodes");
+    expect(status.has_value(), "status request encodes");
+
+    if (queue) {
+        const auto decoded = rlbs::decode_request(*queue);
+        expect(decoded && std::holds_alternative<rlbs::QueueRequest>(*decoded),
+               "queue request keeps its type");
+    }
+
+    if (status) {
+        const auto decoded = rlbs::decode_request(*status);
+        expect(decoded && std::get<rlbs::StatusRequest>(*decoded).job_id == 73,
+               "status request keeps its job id");
+    }
+}
+
 void test_responses_round_trip() {
     const auto submitted =
         rlbs::encode_response(rlbs::SubmitResponse{.job_id = 42});
@@ -107,6 +129,81 @@ void test_responses_round_trip() {
     }
 }
 
+void test_query_responses_round_trip() {
+    const rlbs::QueueResponse expected_queue{
+        .jobs =
+            {
+                {
+                    .id = 11,
+                    .name = "queued",
+                    .state = rlbs::JobState::pending,
+                    .resources = {.cpus = 2, .memory_mb = 1024, .gpus = 0},
+                    .assigned_node = std::nullopt,
+                },
+                {
+                    .id = 12,
+                    .name = "active",
+                    .state = rlbs::JobState::running,
+                    .resources = {.cpus = 4, .memory_mb = 8192, .gpus = 1},
+                    .assigned_node = "head",
+                },
+            },
+    };
+    const rlbs::Job expected_job{
+        .id = 12,
+        .queue_sequence = 8,
+        .spec = example_spec(),
+        .state = rlbs::JobState::completed,
+        .assigned_node = "head",
+        .result =
+            rlbs::JobResult{
+                .exit_code = 7,
+                .terminating_signal = std::nullopt,
+                .dumped_core = false,
+            },
+    };
+    const auto queue = rlbs::encode_response(expected_queue);
+    const auto status =
+        rlbs::encode_response(rlbs::StatusResponse{.job = expected_job});
+
+    expect(queue.has_value(), "queue response encodes");
+    expect(status.has_value(), "status response encodes");
+
+    if (queue) {
+        const auto decoded = rlbs::decode_response(*queue);
+        expect(decoded && std::get<rlbs::QueueResponse>(*decoded).jobs.size() ==
+                              expected_queue.jobs.size(),
+               "queue response keeps every job");
+
+        if (decoded) {
+            const auto& jobs = std::get<rlbs::QueueResponse>(*decoded).jobs;
+
+            if (jobs.size() == expected_queue.jobs.size()) {
+                expect(jobs[0].name == "queued",
+                       "queue response keeps job names");
+                expect(jobs[1].assigned_node == "head",
+                       "queue response keeps assigned nodes");
+            }
+        }
+    }
+
+    if (status) {
+        const auto decoded = rlbs::decode_response(*status);
+        expect(decoded.has_value(), "status response decodes");
+
+        if (decoded) {
+            const auto& job = std::get<rlbs::StatusResponse>(*decoded).job;
+            expect(job.id == expected_job.id, "status response keeps job id");
+            expect(job.spec.argv == expected_job.spec.argv,
+                   "status response keeps argv");
+            expect(job.state == rlbs::JobState::completed,
+                   "status response keeps state");
+            expect(job.result && job.result->exit_code == 7,
+                   "status response keeps process results");
+        }
+    }
+}
+
 void test_bad_frames_are_rejected() {
     auto frame = rlbs::encode_request(
         rlbs::ControlRequest{rlbs::SubmitRequest{.spec = example_spec()}});
@@ -127,7 +224,9 @@ void test_bad_frames_are_rejected() {
 
 int main() {
     test_submit_request_round_trip();
+    test_query_requests_round_trip();
     test_responses_round_trip();
+    test_query_responses_round_trip();
     test_bad_frames_are_rejected();
 
     if (failures == 0) {

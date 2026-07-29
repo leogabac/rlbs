@@ -922,6 +922,52 @@ JobRepository::pending() const {
     return jobs;
 }
 
+std::expected<std::vector<Job>, RepositoryError> JobRepository::all() const {
+    auto statement =
+        prepare(connection_, "SELECT id FROM jobs ORDER BY queue_sequence, id;",
+                RepositoryOperation::read_job);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    std::vector<JobId> ids;
+    int result = SQLITE_ROW;
+
+    while ((result = sqlite3_step(statement->get())) == SQLITE_ROW) {
+        ids.push_back(
+            static_cast<JobId>(sqlite3_column_int64(statement->get(), 0)));
+    }
+
+    if (result != SQLITE_DONE) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_job, result)};
+    }
+
+    std::vector<Job> jobs;
+    jobs.reserve(ids.size());
+
+    for (const auto id : ids) {
+        auto job = find(id);
+
+        if (!job) {
+            return std::unexpected{std::move(job.error())};
+        }
+
+        // this should be impossible on one sqlite connection, but returning a
+        // corrupt-data error is nicer than quietly dropping a haunted job
+        if (!*job) {
+            return std::unexpected{
+                error(connection_, RepositoryOperation::read_job,
+                      SQLITE_CORRUPT, "job disappeared while loading queue")};
+        }
+
+        jobs.push_back(std::move(**job));
+    }
+
+    return jobs;
+}
+
 std::expected<Job, RepositoryError>
 JobRepository::transition(JobId id, const JobTransition& update) {
     if (auto begun = execute(connection_, "BEGIN IMMEDIATE;",

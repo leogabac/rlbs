@@ -242,6 +242,8 @@ std::string_view cli_usage() {
 
 commands:
   submit                 submit a batch job
+  queue                  list jobs
+  status JOB_ID          show one job
 
 general:
   --version              show the rlbs version

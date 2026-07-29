@@ -113,9 +113,8 @@ struct CommandResult {
 };
 
 [[nodiscard]] CommandResult
-run_submit_command(const std::filesystem::path& executable,
-                   const std::filesystem::path& socket_path,
-                   const std::filesystem::path& working_directory) {
+run_cli_command(const std::filesystem::path& executable,
+                const std::vector<std::string>& arguments) {
     int output_pipe[2]{};
 
     if (::pipe(output_pipe) < 0) {
@@ -130,13 +129,21 @@ run_submit_command(const std::filesystem::path& executable,
         if (::dup2(output_pipe[1], STDOUT_FILENO) < 0) {
             ::_exit(126);
         }
+        if (::dup2(output_pipe[1], STDERR_FILENO) < 0) {
+            ::_exit(126);
+        }
 
         static_cast<void>(::close(output_pipe[1]));
-        ::execl(executable.c_str(), executable.c_str(), "submit", "--socket",
-                socket_path.c_str(), "--name", "cli-job", "--cpus", "2",
-                "--memory-mb", "1024", "--cwd", working_directory.c_str(),
-                "--env", "CLI_MESSAGE=from cli", "--", "/bin/sh", "-c",
-                "printf \"$CLI_MESSAGE\\n\"", static_cast<char*>(nullptr));
+        std::vector<char*> argv;
+        argv.reserve(arguments.size() + 2);
+        argv.push_back(const_cast<char*>(executable.c_str()));
+
+        for (const auto& argument : arguments) {
+            argv.push_back(const_cast<char*>(argument.c_str()));
+        }
+
+        argv.push_back(nullptr);
+        ::execv(executable.c_str(), argv.data());
         ::_exit(127);
     }
 
@@ -291,7 +298,25 @@ void test_real_cli_submits_to_daemon(
     }
 
     const auto submitted =
-        run_submit_command(cli_executable, socket_path, temporary.path());
+        run_cli_command(cli_executable, {
+                                            "submit",
+                                            "--socket",
+                                            socket_path.string(),
+                                            "--name",
+                                            "cli-job",
+                                            "--cpus",
+                                            "2",
+                                            "--memory-mb",
+                                            "1024",
+                                            "--cwd",
+                                            temporary.path().string(),
+                                            "--env",
+                                            "CLI_MESSAGE=from cli",
+                                            "--",
+                                            "/bin/sh",
+                                            "-c",
+                                            "printf \"$CLI_MESSAGE\\n\"",
+                                        });
     expect(submitted.exit_code == 0, "real rlbs submit exits successfully");
     expect(submitted.output == "submitted job 1\n",
            "real rlbs submit prints the assigned job id");
@@ -315,6 +340,31 @@ void test_real_cli_submits_to_daemon(
            "cli-submitted job writes its default stdout file");
     expect(std::filesystem::exists(temporary.path() / "cli-job.e1"),
            "cli-submitted job creates its default stderr file");
+
+    const auto queued = run_cli_command(
+        cli_executable, {"queue", "--socket", socket_path.string()});
+    expect(queued.exit_code == 0, "real rlbs queue exits successfully");
+    expect(queued.output.contains("cli-job"),
+           "real rlbs queue prints the submitted job");
+    expect(queued.output.contains("completed"),
+           "real rlbs queue prints the final state");
+
+    const auto status = run_cli_command(
+        cli_executable, {"status", "--socket", socket_path.string(), "1"});
+    expect(status.exit_code == 0, "real rlbs status exits successfully");
+    expect(status.output.contains("job id: 1"),
+           "real rlbs status prints the requested id");
+    expect(status.output.contains("name: cli-job"),
+           "real rlbs status prints the job name");
+    expect(status.output.contains("exit code: 0"),
+           "real rlbs status prints the process result");
+
+    const auto missing = run_cli_command(
+        cli_executable, {"status", "--socket", socket_path.string(), "999"});
+    expect(missing.exit_code == 1, "missing status exits with an error");
+    expect(missing.output.contains("job 999 was not found"),
+           "missing status explains which job was absent");
+
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }
 

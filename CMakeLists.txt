@@ -105,6 +105,7 @@ target_link_libraries(rlbs_daemon
 )
 
 add_library(rlbs_cli
+    src/cli/query.cpp
     src/cli/submit.cpp
 )
 
@@ -269,6 +270,20 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_cli_tests
         COMMAND rlbs_cli_tests
+    )
+
+    add_executable(rlbs_query_cli_tests
+        tests/cli/query_test.cpp
+    )
+
+    target_link_libraries(rlbs_query_cli_tests
+        PRIVATE
+            rlbs_cli
+    )
+
+    add_test(
+        NAME rlbs_query_cli_tests
+        COMMAND rlbs_query_cli_tests
     )
 
     set_tests_properties(

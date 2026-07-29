@@ -11,7 +11,11 @@ namespace {
 constexpr std::uint32_t protocol_magic = 0x524c4253;
 constexpr std::uint16_t protocol_version = 1;
 constexpr std::uint8_t submit_request_type = 1;
+constexpr std::uint8_t queue_request_type = 2;
+constexpr std::uint8_t status_request_type = 3;
 constexpr std::uint8_t submit_response_type = 129;
+constexpr std::uint8_t queue_response_type = 130;
+constexpr std::uint8_t status_response_type = 131;
 constexpr std::uint8_t error_response_type = 255;
 constexpr std::uint32_t max_collection_size = 65536;
 
@@ -78,6 +82,17 @@ class Writer {
         }
 
         return text(value->string());
+    }
+
+    [[nodiscard]] std::expected<void, ProtocolError>
+    optional_text(const std::optional<std::string>& value) {
+        integer8(value ? 1 : 0);
+
+        if (!value) {
+            return {};
+        }
+
+        return text(*value);
     }
 
     void append(const std::vector<std::byte>& bytes) {
@@ -190,6 +205,30 @@ class Reader {
 
         return std::optional<std::filesystem::path>{
             std::filesystem::path{std::move(*value)}};
+    }
+
+    [[nodiscard]] std::expected<std::optional<std::string>, ProtocolError>
+    optional_text() {
+        auto present = integer8();
+
+        if (!present) {
+            return std::unexpected{std::move(present.error())};
+        }
+        if (*present > 1) {
+            return std::unexpected{error(ProtocolOperation::decode,
+                                         "optional flag is not boolean")};
+        }
+        if (*present == 0) {
+            return std::optional<std::string>{};
+        }
+
+        auto value = text();
+
+        if (!value) {
+            return std::unexpected{std::move(value.error())};
+        }
+
+        return std::optional<std::string>{std::move(*value)};
     }
 
     [[nodiscard]] std::size_t remaining() const {
@@ -382,6 +421,230 @@ decode_job_spec(Reader& reader) {
     };
 }
 
+void encode_job_state(Writer& writer, JobState state) {
+    writer.integer8(static_cast<std::uint8_t>(state));
+}
+
+[[nodiscard]] std::expected<JobState, ProtocolError>
+decode_job_state(Reader& reader) {
+    auto encoded = reader.integer8();
+
+    if (!encoded) {
+        return std::unexpected{std::move(encoded.error())};
+    }
+    if (*encoded > static_cast<std::uint8_t>(JobState::cancelled)) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "job state is unknown")};
+    }
+
+    return static_cast<JobState>(*encoded);
+}
+
+void encode_optional_integer(Writer& writer, const std::optional<int>& value) {
+    writer.integer8(value ? 1 : 0);
+
+    if (value) {
+        writer.integer32(static_cast<std::uint32_t>(*value));
+    }
+}
+
+[[nodiscard]] std::expected<std::optional<int>, ProtocolError>
+decode_optional_integer(Reader& reader) {
+    auto present = reader.integer8();
+
+    if (!present) {
+        return std::unexpected{std::move(present.error())};
+    }
+    if (*present > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "optional flag is not boolean")};
+    }
+    if (*present == 0) {
+        return std::optional<int>{};
+    }
+
+    auto value = reader.integer32();
+
+    if (!value) {
+        return std::unexpected{std::move(value.error())};
+    }
+    if (*value > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "process result is out of range")};
+    }
+
+    return std::optional<int>{static_cast<int>(*value)};
+}
+
+void encode_job_result(Writer& writer, const std::optional<JobResult>& result) {
+    writer.integer8(result ? 1 : 0);
+
+    if (!result) {
+        return;
+    }
+
+    encode_optional_integer(writer, result->exit_code);
+    encode_optional_integer(writer, result->terminating_signal);
+    writer.integer8(result->dumped_core ? 1 : 0);
+}
+
+[[nodiscard]] std::expected<std::optional<JobResult>, ProtocolError>
+decode_job_result(Reader& reader) {
+    auto present = reader.integer8();
+
+    if (!present) {
+        return std::unexpected{std::move(present.error())};
+    }
+    if (*present > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "result flag is not boolean")};
+    }
+    if (*present == 0) {
+        return std::optional<JobResult>{};
+    }
+
+    auto exit_code = decode_optional_integer(reader);
+    auto signal = decode_optional_integer(reader);
+    auto dumped_core = reader.integer8();
+
+    if (!exit_code) {
+        return std::unexpected{std::move(exit_code.error())};
+    }
+    if (!signal) {
+        return std::unexpected{std::move(signal.error())};
+    }
+    if (!dumped_core) {
+        return std::unexpected{std::move(dumped_core.error())};
+    }
+    if (*dumped_core > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "core dump flag is not boolean")};
+    }
+
+    return std::optional<JobResult>{JobResult{
+        .exit_code = std::move(*exit_code),
+        .terminating_signal = std::move(*signal),
+        .dumped_core = *dumped_core != 0,
+    }};
+}
+
+[[nodiscard]] std::expected<void, ProtocolError>
+encode_job_summary(Writer& writer, const JobSummary& job) {
+    writer.integer64(job.id);
+
+    if (auto written = writer.text(job.name); !written) {
+        return written;
+    }
+
+    encode_job_state(writer, job.state);
+    writer.integer32(job.resources.cpus);
+    writer.integer64(job.resources.memory_mb);
+    writer.integer32(job.resources.gpus);
+    return writer.optional_text(job.assigned_node);
+}
+
+[[nodiscard]] std::expected<JobSummary, ProtocolError>
+decode_job_summary(Reader& reader) {
+    auto id = reader.integer64();
+    auto name = reader.text();
+    auto state = decode_job_state(reader);
+    auto cpus = reader.integer32();
+    auto memory_mb = reader.integer64();
+    auto gpus = reader.integer32();
+    auto assigned_node = reader.optional_text();
+
+    if (!id) {
+        return std::unexpected{std::move(id.error())};
+    }
+    if (!name) {
+        return std::unexpected{std::move(name.error())};
+    }
+    if (!state) {
+        return std::unexpected{std::move(state.error())};
+    }
+    if (!cpus) {
+        return std::unexpected{std::move(cpus.error())};
+    }
+    if (!memory_mb) {
+        return std::unexpected{std::move(memory_mb.error())};
+    }
+    if (!gpus) {
+        return std::unexpected{std::move(gpus.error())};
+    }
+    if (!assigned_node) {
+        return std::unexpected{std::move(assigned_node.error())};
+    }
+
+    return JobSummary{
+        .id = *id,
+        .name = std::move(*name),
+        .state = *state,
+        .resources =
+            {
+                .cpus = *cpus,
+                .memory_mb = *memory_mb,
+                .gpus = *gpus,
+            },
+        .assigned_node = std::move(*assigned_node),
+    };
+}
+
+[[nodiscard]] std::expected<void, ProtocolError> encode_job(Writer& writer,
+                                                            const Job& job) {
+    writer.integer64(job.id);
+    writer.integer64(job.queue_sequence);
+
+    if (auto encoded = encode_job_spec(writer, job.spec); !encoded) {
+        return encoded;
+    }
+
+    encode_job_state(writer, job.state);
+
+    if (auto encoded = writer.optional_text(job.assigned_node); !encoded) {
+        return encoded;
+    }
+
+    encode_job_result(writer, job.result);
+    return {};
+}
+
+[[nodiscard]] std::expected<Job, ProtocolError> decode_job(Reader& reader) {
+    auto id = reader.integer64();
+    auto queue_sequence = reader.integer64();
+    auto spec = decode_job_spec(reader);
+    auto state = decode_job_state(reader);
+    auto assigned_node = reader.optional_text();
+    auto result = decode_job_result(reader);
+
+    if (!id) {
+        return std::unexpected{std::move(id.error())};
+    }
+    if (!queue_sequence) {
+        return std::unexpected{std::move(queue_sequence.error())};
+    }
+    if (!spec) {
+        return std::unexpected{std::move(spec.error())};
+    }
+    if (!state) {
+        return std::unexpected{std::move(state.error())};
+    }
+    if (!assigned_node) {
+        return std::unexpected{std::move(assigned_node.error())};
+    }
+    if (!result) {
+        return std::unexpected{std::move(result.error())};
+    }
+
+    return Job{
+        .id = *id,
+        .queue_sequence = *queue_sequence,
+        .spec = std::move(*spec),
+        .state = *state,
+        .assigned_node = std::move(*assigned_node),
+        .result = std::move(*result),
+    };
+}
+
 [[nodiscard]] std::expected<std::vector<std::byte>, ProtocolError>
 finish_frame(Writer payload) {
     // the first four bytes describe the payload length. seqpacket gives us a
@@ -465,11 +728,18 @@ void write_header(Writer& writer, std::uint8_t type) {
 std::expected<std::vector<std::byte>, ProtocolError>
 encode_request(const ControlRequest& request) {
     Writer payload;
-    write_header(payload, submit_request_type);
-    const auto& submit = std::get<SubmitRequest>(request);
 
-    if (auto encoded = encode_job_spec(payload, submit.spec); !encoded) {
-        return std::unexpected{std::move(encoded.error())};
+    if (const auto* submit = std::get_if<SubmitRequest>(&request)) {
+        write_header(payload, submit_request_type);
+
+        if (auto encoded = encode_job_spec(payload, submit->spec); !encoded) {
+            return std::unexpected{std::move(encoded.error())};
+        }
+    } else if (std::holds_alternative<QueueRequest>(request)) {
+        write_header(payload, queue_request_type);
+    } else {
+        write_header(payload, status_request_type);
+        payload.integer64(std::get<StatusRequest>(request).job_id);
     }
 
     return finish_frame(std::move(payload));
@@ -489,22 +759,37 @@ decode_request(const std::vector<std::byte>& frame) {
     if (!type) {
         return std::unexpected{std::move(type.error())};
     }
-    if (*type != submit_request_type) {
+    ControlRequest request;
+
+    if (*type == submit_request_type) {
+        auto spec = decode_job_spec(reader);
+
+        if (!spec) {
+            return std::unexpected{std::move(spec.error())};
+        }
+
+        request = SubmitRequest{.spec = std::move(*spec)};
+    } else if (*type == queue_request_type) {
+        request = QueueRequest{};
+    } else if (*type == status_request_type) {
+        auto job_id = reader.integer64();
+
+        if (!job_id) {
+            return std::unexpected{std::move(job_id.error())};
+        }
+
+        request = StatusRequest{.job_id = *job_id};
+    } else {
         return std::unexpected{
             error(ProtocolOperation::decode, "unknown control request type")};
     }
 
-    auto spec = decode_job_spec(reader);
-
-    if (!spec) {
-        return std::unexpected{std::move(spec.error())};
-    }
     if (reader.remaining() != 0) {
         return std::unexpected{
             error(ProtocolOperation::decode, "control request has extra data")};
     }
 
-    return ControlRequest{SubmitRequest{.spec = std::move(*spec)}};
+    return request;
 }
 
 std::expected<std::vector<std::byte>, ProtocolError>
@@ -514,6 +799,26 @@ encode_response(const ControlResponse& response) {
     if (const auto* submitted = std::get_if<SubmitResponse>(&response)) {
         write_header(payload, submit_response_type);
         payload.integer64(submitted->job_id);
+    } else if (const auto* queue = std::get_if<QueueResponse>(&response)) {
+        if (queue->jobs.size() > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::encode, "queue is too large")};
+        }
+
+        write_header(payload, queue_response_type);
+        payload.integer32(static_cast<std::uint32_t>(queue->jobs.size()));
+
+        for (const auto& job : queue->jobs) {
+            if (auto encoded = encode_job_summary(payload, job); !encoded) {
+                return std::unexpected{std::move(encoded.error())};
+            }
+        }
+    } else if (const auto* status = std::get_if<StatusResponse>(&response)) {
+        write_header(payload, status_response_type);
+
+        if (auto encoded = encode_job(payload, status->job); !encoded) {
+            return std::unexpected{std::move(encoded.error())};
+        }
     } else {
         write_header(payload, error_response_type);
 
@@ -552,6 +857,39 @@ decode_response(const std::vector<std::byte>& frame) {
         }
 
         response = SubmitResponse{.job_id = *job_id};
+    } else if (*type == queue_response_type) {
+        auto count = reader.integer32();
+
+        if (!count) {
+            return std::unexpected{std::move(count.error())};
+        }
+        if (*count > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::decode, "queue is too large")};
+        }
+
+        std::vector<JobSummary> jobs;
+        jobs.reserve(*count);
+
+        for (std::uint32_t index = 0; index < *count; ++index) {
+            auto job = decode_job_summary(reader);
+
+            if (!job) {
+                return std::unexpected{std::move(job.error())};
+            }
+
+            jobs.push_back(std::move(*job));
+        }
+
+        response = QueueResponse{.jobs = std::move(jobs)};
+    } else if (*type == status_response_type) {
+        auto job = decode_job(reader);
+
+        if (!job) {
+            return std::unexpected{std::move(job.error())};
+        }
+
+        response = StatusResponse{.job = std::move(*job)};
     } else if (*type == error_response_type) {
         auto message = reader.text();
 

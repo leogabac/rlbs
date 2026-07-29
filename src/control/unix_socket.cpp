@@ -193,16 +193,53 @@ receive_frame(int socket) {
 
 [[nodiscard]] ControlResponse handle_request(const ControlRequest& request,
                                              JobRepository& repository) {
-    // transport ends here. after decoding, submission uses the same repository
-    // as every future frontend instead of letting socket code poke sqlite
-    const auto& submitted = std::get<SubmitRequest>(request);
-    auto job = repository.submit(submitted.spec);
+    // transport ends here. every command uses repository methods instead of
+    // teaching socket code enough sqlite to become a second database layer
+    if (const auto* submitted = std::get_if<SubmitRequest>(&request)) {
+        auto job = repository.submit(submitted->spec);
+
+        if (!job) {
+            return ErrorResponse{.message = job.error().message};
+        }
+
+        return SubmitResponse{.job_id = job->id};
+    }
+
+    if (std::holds_alternative<QueueRequest>(request)) {
+        auto jobs = repository.all();
+
+        if (!jobs) {
+            return ErrorResponse{.message = jobs.error().message};
+        }
+
+        std::vector<JobSummary> summaries;
+        summaries.reserve(jobs->size());
+
+        for (const auto& job : *jobs) {
+            summaries.push_back({
+                .id = job.id,
+                .name = job.spec.name,
+                .state = job.state,
+                .resources = job.spec.resources,
+                .assigned_node = job.assigned_node,
+            });
+        }
+
+        return QueueResponse{.jobs = std::move(summaries)};
+    }
+
+    const auto job_id = std::get<StatusRequest>(request).job_id;
+    auto job = repository.find(job_id);
 
     if (!job) {
         return ErrorResponse{.message = job.error().message};
     }
+    if (!*job) {
+        return ErrorResponse{.message = "job " + std::to_string(job_id) +
+                                        " was not found"};
+    }
 
-    return SubmitResponse{.job_id = job->id};
+    return StatusResponse{.job = std::move(**job)};
 }
 
 void send_error_response(int socket, std::string_view message) {
@@ -364,13 +401,61 @@ ControlClient::ControlClient(std::filesystem::path path)
 
 std::expected<JobId, ControlSocketError>
 ControlClient::submit(const JobSpec& spec) const {
+    auto response = request(ControlRequest{SubmitRequest{.spec = spec}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (const auto* submitted = std::get_if<SubmitResponse>(&*response)) {
+        return submitted->job_id;
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to submit")};
+}
+
+std::expected<std::vector<JobSummary>, ControlSocketError>
+ControlClient::queue() const {
+    auto response = request(ControlRequest{QueueRequest{}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* queue = std::get_if<QueueResponse>(&*response)) {
+        return std::move(queue->jobs);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to queue")};
+}
+
+std::expected<Job, ControlSocketError>
+ControlClient::status(JobId job_id) const {
+    auto response = request(ControlRequest{StatusRequest{.job_id = job_id}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* status = std::get_if<StatusResponse>(&*response)) {
+        return std::move(status->job);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to status")};
+}
+
+std::expected<ControlResponse, ControlSocketError>
+ControlClient::request(const ControlRequest& control_request) const {
     // encode before opening anything so a size error does not create a
     // pointless connection the server then has to clean up
-    auto request = encode_request(ControlRequest{SubmitRequest{.spec = spec}});
+    auto request_frame = encode_request(control_request);
 
-    if (!request) {
+    if (!request_frame) {
         return std::unexpected{error(ControlSocketOperation::encode_frame,
-                                     EINVAL, request.error().message)};
+                                     EINVAL, request_frame.error().message)};
     }
 
     auto address = socket_address(path_);
@@ -395,7 +480,7 @@ ControlClient::submit(const JobSpec& spec) const {
                                      errno, path_.string())};
     }
 
-    if (auto sent = send_frame(socket.get(), *request); !sent) {
+    if (auto sent = send_frame(socket.get(), *request_frame); !sent) {
         return std::unexpected{std::move(sent.error())};
     }
 
@@ -412,12 +497,12 @@ ControlClient::submit(const JobSpec& spec) const {
                                      EINVAL, response.error().message)};
     }
 
-    if (const auto* submitted = std::get_if<SubmitResponse>(&*response)) {
-        return submitted->job_id;
+    if (const auto* failed = std::get_if<ErrorResponse>(&*response)) {
+        return std::unexpected{
+            error(ControlSocketOperation::server_response, 0, failed->message)};
     }
 
-    return std::unexpected{error(ControlSocketOperation::server_response, 0,
-                                 std::get<ErrorResponse>(*response).message)};
+    return std::move(*response);
 }
 
 } // namespace rlbs

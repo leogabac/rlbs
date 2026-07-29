@@ -5,8 +5,7 @@
 #include <filesystem>
 #include <string>
 
-#include <rlbs/core/job_spec.hpp>
-#include <rlbs/core/types.hpp>
+#include <rlbs/control/protocol.hpp>
 #include <rlbs/persistence/job_repository.hpp>
 
 namespace rlbs {
@@ -75,7 +74,16 @@ class ControlClient {
     [[nodiscard]] std::expected<JobId, ControlSocketError>
     submit(const JobSpec& spec) const;
 
+    [[nodiscard]] std::expected<std::vector<JobSummary>, ControlSocketError>
+    queue() const;
+
+    [[nodiscard]] std::expected<Job, ControlSocketError>
+    status(JobId job_id) const;
+
   private:
+    [[nodiscard]] std::expected<ControlResponse, ControlSocketError>
+    request(const ControlRequest& request) const;
+
     std::filesystem::path path_;
 };
 

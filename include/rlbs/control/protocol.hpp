@@ -7,7 +7,7 @@
 #include <variant>
 #include <vector>
 
-#include <rlbs/core/job_spec.hpp>
+#include <rlbs/core/job.hpp>
 #include <rlbs/core/types.hpp>
 
 namespace rlbs {
@@ -28,17 +28,42 @@ struct SubmitRequest {
     JobSpec spec;
 };
 
-using ControlRequest = std::variant<SubmitRequest>;
+struct QueueRequest {};
+
+struct StatusRequest {
+    JobId job_id{0};
+};
+
+using ControlRequest = std::variant<SubmitRequest, QueueRequest, StatusRequest>;
 
 struct SubmitResponse {
     JobId job_id{0};
+};
+
+// queue only needs the fields a human can scan in a table. shipping argv and
+// environment for every job would make one innocent queue command pretty huge
+struct JobSummary {
+    JobId id{0};
+    std::string name;
+    JobState state{JobState::pending};
+    ResourceRequest resources;
+    std::optional<NodeId> assigned_node;
+};
+
+struct QueueResponse {
+    std::vector<JobSummary> jobs;
+};
+
+struct StatusResponse {
+    Job job;
 };
 
 struct ErrorResponse {
     std::string message;
 };
 
-using ControlResponse = std::variant<SubmitResponse, ErrorResponse>;
+using ControlResponse =
+    std::variant<SubmitResponse, QueueResponse, StatusResponse, ErrorResponse>;
 
 // frames carry their own size even though unix seqpacket already has packet
 // boundaries. tcp can reuse the exact bytes later without inventing framing

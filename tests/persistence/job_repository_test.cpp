@@ -202,6 +202,46 @@ void test_pending_jobs_keep_fifo_order() {
     }
 }
 
+void test_all_jobs_include_finished_jobs() {
+    TemporaryDirectory temporary;
+    auto database = rlbs::SqliteDatabase::open(temporary.path() / "all.db");
+
+    expect(database.has_value(), "all-jobs database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto first = repository.submit(example_spec("finished"));
+    const auto second = repository.submit(example_spec("waiting"));
+
+    expect(first && second, "all-jobs fixtures submit");
+
+    if (!first || !second) {
+        return;
+    }
+
+    static_cast<void>(repository.transition(
+        first->id, {
+                       .state = rlbs::JobState::cancelled,
+                       .assigned_node = std::nullopt,
+                       .result = std::nullopt,
+                       .detail = "cancelled in repository test",
+                   }));
+
+    const auto jobs = repository.all();
+    expect(jobs && jobs->size() == 2,
+           "all jobs includes terminal and pending jobs");
+
+    if (jobs && jobs->size() == 2) {
+        expect((*jobs)[0].state == rlbs::JobState::cancelled,
+               "all jobs keeps the finished job");
+        expect((*jobs)[1].state == rlbs::JobState::pending,
+               "all jobs keeps the waiting job");
+    }
+}
+
 void test_failed_submission_rolls_back() {
     TemporaryDirectory temporary;
     auto database =
@@ -439,6 +479,7 @@ END;
 int main() {
     test_submit_find_and_reopen();
     test_pending_jobs_keep_fifo_order();
+    test_all_jobs_include_finished_jobs();
     test_failed_submission_rolls_back();
     test_transitions_store_results_and_events();
     test_invalid_transition_changes_nothing();
