@@ -12,6 +12,14 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(SQLite3 REQUIRED)
+
+# cmake renamed this target in 4.3, so give older cluster installs the new name
+# too instead of making the minimum version line a lie
+if(NOT TARGET SQLite3::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
+
 add_library(rlbs_core
     src/core/job.cpp
     src/core/node.cpp
@@ -32,6 +40,20 @@ add_library(rlbs_execution
 target_include_directories(rlbs_execution
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
+)
+
+add_library(rlbs_persistence
+    src/persistence/database.cpp
+)
+
+target_include_directories(rlbs_persistence
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rlbs_persistence
+    PRIVATE
+        SQLite3::SQLite3
 )
 
 add_executable(rlbs
@@ -90,6 +112,21 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_execution_tests
         COMMAND rlbs_execution_tests
+    )
+
+    add_executable(rlbs_persistence_tests
+        tests/persistence/database_test.cpp
+    )
+
+    target_link_libraries(rlbs_persistence_tests
+        PRIVATE
+            rlbs_persistence
+            SQLite3::SQLite3
+    )
+
+    add_test(
+        NAME rlbs_persistence_tests
+        COMMAND rlbs_persistence_tests
     )
 
     set_tests_properties(
