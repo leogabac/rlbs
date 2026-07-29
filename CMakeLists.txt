@@ -58,6 +58,22 @@ target_link_libraries(rlbs_persistence
         SQLite3::SQLite3
 )
 
+add_library(rlbs_local
+    src/local/coordinator.cpp
+)
+
+target_include_directories(rlbs_local
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rlbs_local
+    PUBLIC
+        rlbs_core
+        rlbs_execution
+        rlbs_persistence
+)
+
 add_executable(rlbs
     apps/rlbs/main.cpp
 )
@@ -146,8 +162,23 @@ if(BUILD_TESTING)
         COMMAND rlbs_job_repository_tests
     )
 
+    add_executable(rlbs_local_tests
+        tests/local/coordinator_test.cpp
+    )
+
+    target_link_libraries(rlbs_local_tests
+        PRIVATE
+            rlbs_local
+    )
+
+    add_test(
+        NAME rlbs_local_tests
+        COMMAND rlbs_local_tests
+    )
+
     set_tests_properties(
         rlbs_execution_tests
+        rlbs_local_tests
         PROPERTIES
             TIMEOUT 10
     )
