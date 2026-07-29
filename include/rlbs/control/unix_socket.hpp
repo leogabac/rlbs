@@ -6,6 +6,7 @@
 #include <string>
 
 #include <rlbs/control/protocol.hpp>
+#include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
 
 namespace rlbs {
@@ -40,7 +41,7 @@ class ControlServer {
   public:
     [[nodiscard]] static std::expected<ControlServer, ControlSocketError>
     listen(const std::filesystem::path& path, JobRepository& repository,
-           LocalCoordinator& coordinator);
+           LocalCoordinator& coordinator, Logger* logger = nullptr);
 
     ControlServer(const ControlServer&) = delete;
     ControlServer& operator=(const ControlServer&) = delete;
@@ -58,7 +59,8 @@ class ControlServer {
 
   private:
     ControlServer(int socket, std::filesystem::path path,
-                  JobRepository& repository, LocalCoordinator& coordinator);
+                  JobRepository& repository, LocalCoordinator& coordinator,
+                  Logger* logger);
 
     void handle_client(int client_socket);
 
@@ -66,6 +68,7 @@ class ControlServer {
     std::filesystem::path path_;
     JobRepository* repository_{nullptr};
     LocalCoordinator* coordinator_{nullptr};
+    Logger* logger_{nullptr};
     bool owns_path_{false};
 };
 

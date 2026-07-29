@@ -1,6 +1,7 @@
 #include <rlbs/local/coordinator.hpp>
 
 #include <algorithm>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -90,8 +91,9 @@ process_failure(LocalCoordinatorOperation operation,
 } // namespace
 
 LocalCoordinator::LocalCoordinator(JobRepository& repository, Node local_node,
-                                   const SchedulingPolicy& scheduler)
-    : repository_{repository}, scheduler_{scheduler} {
+                                   const SchedulingPolicy& scheduler,
+                                   Logger* logger)
+    : repository_{repository}, scheduler_{scheduler}, logger_{logger} {
     nodes_.push_back(std::move(local_node));
 }
 
@@ -157,6 +159,11 @@ LocalCoordinator::cancel(JobId job_id) {
                                    std::move(cancelled.error()))};
         }
 
+        if (logger_ != nullptr) {
+            logger_->info("scheduler", "job " + std::to_string(job_id) +
+                                           " cancelled while pending");
+        }
+
         return {};
     }
 
@@ -186,6 +193,13 @@ LocalCoordinator::cancel(JobId job_id) {
 
     active->cancellation_requested = true;
     active->cancellation_requested_at = std::chrono::steady_clock::now();
+
+    if (logger_ != nullptr) {
+        logger_->info("executor", "sent sigterm to job " +
+                                      std::to_string(job_id) +
+                                      " process group");
+    }
+
     return {};
 }
 
@@ -216,6 +230,12 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
                 }
 
                 active->cancellation_forced = true;
+
+                if (logger_ != nullptr) {
+                    logger_->warning("executor",
+                                     "job " + std::to_string(active->job_id) +
+                                         " ignored sigterm, sent sigkill");
+                }
             }
 
             ++active;
@@ -241,6 +261,22 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
             return std::unexpected{
                 repository_failure(LocalCoordinatorOperation::persist_finished,
                                    std::move(completed.error()))};
+        }
+
+        if (logger_ != nullptr) {
+            std::ostringstream message;
+            message << "job " << active->job_id << ' '
+                    << (active->cancellation_requested ? "cancelled"
+                                                       : "completed");
+
+            if ((*result)->exit_code) {
+                message << " exit_code=" << *(*result)->exit_code;
+            }
+            if ((*result)->terminating_signal) {
+                message << " signal=" << *(*result)->terminating_signal;
+            }
+
+            logger_->info("executor", message.str());
         }
 
         if (auto released = release(active->allocation); !released) {
@@ -294,6 +330,15 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
                                std::move(assigned.error()))};
     }
 
+    if (logger_ != nullptr) {
+        std::ostringstream message;
+        message << "job " << job.id << " assigned to " << assignment.node_id
+                << " cpus=" << assignment.allocation.resources.cpus
+                << " memory_mb=" << assignment.allocation.resources.memory_mb
+                << " gpus=" << assignment.allocation.resources.gpus;
+        logger_->info("scheduler", message.str());
+    }
+
     auto starting =
         repository_.transition(job.id, {
                                            .state = JobState::starting,
@@ -338,6 +383,12 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
             return released;
         }
 
+        if (logger_ != nullptr) {
+            logger_->warning("executor",
+                             "job " + std::to_string(job.id) +
+                                 " launch failed: " + launched.error().context);
+        }
+
         // a bad executable is a failed job, not a broken daemon tick. the queue
         // can keep moving after its failure has been recorded
         return {};
@@ -367,6 +418,12 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         return std::unexpected{
             repository_failure(LocalCoordinatorOperation::persist_running,
                                std::move(running.error()))};
+    }
+
+    if (logger_ != nullptr) {
+        logger_->info("executor",
+                      "job " + std::to_string(job.id) +
+                          " started pid=" + std::to_string(launched->pid()));
     }
 
     active_jobs_.push_back({

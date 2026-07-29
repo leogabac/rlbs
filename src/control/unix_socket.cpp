@@ -194,14 +194,25 @@ receive_frame(int socket) {
 
 [[nodiscard]] ControlResponse handle_request(const ControlRequest& request,
                                              JobRepository& repository,
-                                             LocalCoordinator& coordinator) {
+                                             LocalCoordinator& coordinator,
+                                             Logger* logger) {
     // transport ends here. every command uses repository methods instead of
     // teaching socket code enough sqlite to become a second database layer
     if (const auto* submitted = std::get_if<SubmitRequest>(&request)) {
         auto job = repository.submit(submitted->spec);
 
         if (!job) {
+            if (logger != nullptr) {
+                logger->warning("control", "job submission rejected: " +
+                                               job.error().message);
+            }
+
             return ErrorResponse{.message = job.error().message};
+        }
+
+        if (logger != nullptr) {
+            logger->info("control", "accepted job " + std::to_string(job->id) +
+                                        " name=" + job->spec.name);
         }
 
         return SubmitResponse{.job_id = job->id};
@@ -268,21 +279,22 @@ void send_error_response(int socket, std::string_view message) {
 
 ControlServer::ControlServer(int socket, std::filesystem::path path,
                              JobRepository& repository,
-                             LocalCoordinator& coordinator)
+                             LocalCoordinator& coordinator, Logger* logger)
     : socket_{socket}, path_{std::move(path)}, repository_{&repository},
-      coordinator_{&coordinator}, owns_path_{true} {}
+      coordinator_{&coordinator}, logger_{logger}, owns_path_{true} {}
 
 ControlServer::ControlServer(ControlServer&& other) noexcept
     : socket_{std::exchange(other.socket_, -1)}, path_{std::move(other.path_)},
       repository_{other.repository_}, coordinator_{other.coordinator_},
+      logger_{other.logger_},
       owns_path_{std::exchange(other.owns_path_, false)} {}
 
 ControlServer::~ControlServer() { close(); }
 
 std::expected<ControlServer, ControlSocketError>
 ControlServer::listen(const std::filesystem::path& path,
-                      JobRepository& repository,
-                      LocalCoordinator& coordinator) {
+                      JobRepository& repository, LocalCoordinator& coordinator,
+                      Logger* logger) {
     // order matters: validate the address, deal with a stale name, create the
     // fd, bind the name, then listen. later failures undo the filesystem entry
     // so the next startup is not punished for this one
@@ -334,7 +346,8 @@ ControlServer::listen(const std::filesystem::path& path,
                                      listen_error, path.string())};
     }
 
-    return ControlServer{socket.release(), path, repository, coordinator};
+    return ControlServer{socket.release(), path, repository, coordinator,
+                         logger};
 }
 
 std::expected<std::size_t, ControlSocketError> ControlServer::poll() {
@@ -383,8 +396,8 @@ void ControlServer::handle_client(int client_socket) {
         return;
     }
 
-    auto response =
-        encode_response(handle_request(*request, *repository_, *coordinator_));
+    auto response = encode_response(
+        handle_request(*request, *repository_, *coordinator_, logger_));
 
     if (!response) {
         send_error_response(client_socket, response.error().message);

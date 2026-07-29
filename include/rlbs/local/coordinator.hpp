@@ -11,6 +11,7 @@
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 #include <rlbs/execution/process_runner.hpp>
+#include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
 
 namespace rlbs {
@@ -42,7 +43,8 @@ struct LocalCoordinatorError {
 class LocalCoordinator {
   public:
     LocalCoordinator(JobRepository& repository, Node local_node,
-                     const SchedulingPolicy& scheduler);
+                     const SchedulingPolicy& scheduler,
+                     Logger* logger = nullptr);
 
     [[nodiscard]] std::expected<void, LocalCoordinatorError>
     tick(bool start_new_jobs = true);
@@ -71,6 +73,7 @@ class LocalCoordinator {
     JobRepository& repository_;
     const SchedulingPolicy& scheduler_;
     LocalProcessRunner runner_;
+    Logger* logger_{nullptr};
     std::vector<Node> nodes_;
     std::list<ActiveJob> active_jobs_;
 };

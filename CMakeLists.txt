@@ -20,6 +20,15 @@ if(NOT TARGET SQLite3::SQLite3)
     add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
 
+add_library(rlbs_logging
+    src/logging/logger.cpp
+)
+
+target_include_directories(rlbs_logging
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(rlbs_core
     src/core/job.cpp
     src/core/node.cpp
@@ -87,6 +96,7 @@ target_link_libraries(rlbs_local
     PUBLIC
         rlbs_core
         rlbs_execution
+        rlbs_logging
         rlbs_persistence
 )
 
@@ -161,6 +171,20 @@ target_link_libraries(rlbs-agent
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(rlbs_logging_tests
+        tests/logging/logger_test.cpp
+    )
+
+    target_link_libraries(rlbs_logging_tests
+        PRIVATE
+            rlbs_logging
+    )
+
+    add_test(
+        NAME rlbs_logging_tests
+        COMMAND rlbs_logging_tests
+    )
+
     add_executable(rlbs_core_tests
         tests/core/scheduler_test.cpp
     )
