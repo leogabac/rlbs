@@ -1,5 +1,6 @@
 #include <rlbs/local/coordinator.hpp>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -28,15 +29,27 @@ process_failure(LocalCoordinatorOperation operation,
     };
 }
 
-[[nodiscard]] ProcessSpec process_spec(const JobSpec& job) {
+[[nodiscard]] std::filesystem::path default_output_path(const Job& job,
+                                                        char stream) {
+    std::string name = job.spec.name.empty() ? "job" : job.spec.name;
+
+    // socket clients do not get to smuggle directories into a default filename
+    // through the display name. explicit output paths still work as requested
+    std::ranges::replace(name, '/', '_');
+    return name + '.' + stream + std::to_string(job.id);
+}
+
+[[nodiscard]] ProcessSpec process_spec(const Job& job) {
     return {
-        .argv = job.argv,
-        .working_directory = job.working_directory,
-        .environment = job.environment,
-        .inherit_environment = job.inherit_environment,
-        .stdout_path = job.stdout_path,
-        .stderr_path = job.stderr_path,
-        .append_output = job.append_output,
+        .argv = job.spec.argv,
+        .working_directory = job.spec.working_directory,
+        .environment = job.spec.environment,
+        .inherit_environment = job.spec.inherit_environment,
+        .stdout_path =
+            job.spec.stdout_path.value_or(default_output_path(job, 'o')),
+        .stderr_path =
+            job.spec.stderr_path.value_or(default_output_path(job, 'e')),
+        .append_output = job.spec.append_output,
     };
 }
 
@@ -184,7 +197,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
                                std::move(starting.error()))};
     }
 
-    auto launched = runner_.launch(process_spec(job.spec));
+    auto launched = runner_.launch(process_spec(job));
 
     if (!launched) {
         auto failed = repository_.transition(

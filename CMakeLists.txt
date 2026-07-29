@@ -104,12 +104,28 @@ target_link_libraries(rlbs_daemon
         rlbs_core
 )
 
+add_library(rlbs_cli
+    src/cli/submit.cpp
+)
+
+target_include_directories(rlbs_cli
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rlbs_cli
+    PUBLIC
+        rlbs_core
+)
+
 add_executable(rlbs
     apps/rlbs/main.cpp
 )
 
 target_link_libraries(rlbs
     PRIVATE
+        rlbs_cli
+        rlbs_control
         rlbs_core
 )
 
@@ -222,7 +238,9 @@ if(BUILD_TESTING)
 
     add_test(
         NAME rlbs_daemon_tests
-        COMMAND rlbs_daemon_tests $<TARGET_FILE:rlbsd>
+        COMMAND rlbs_daemon_tests
+            $<TARGET_FILE:rlbsd>
+            $<TARGET_FILE:rlbs>
     )
 
     add_executable(rlbs_control_tests
@@ -237,6 +255,20 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_control_tests
         COMMAND rlbs_control_tests
+    )
+
+    add_executable(rlbs_cli_tests
+        tests/cli/submit_test.cpp
+    )
+
+    target_link_libraries(rlbs_cli_tests
+        PRIVATE
+            rlbs_cli
+    )
+
+    add_test(
+        NAME rlbs_cli_tests
+        COMMAND rlbs_cli_tests
     )
 
     set_tests_properties(
