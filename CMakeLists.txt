@@ -149,6 +149,22 @@ target_link_libraries(rlbs
         rlbs_core
 )
 
+# these stay real aliases instead of three tiny binaries that eventually drift
+# apart because somebody fixed qsub and forgot the other submit path existed
+add_custom_target(pbs_aliases ALL
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        $<TARGET_FILE_DIR:rlbs>/qsub
+        $<TARGET_FILE_DIR:rlbs>/qstat
+        $<TARGET_FILE_DIR:rlbs>/qdel
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        $<TARGET_FILE_NAME:rlbs> $<TARGET_FILE_DIR:rlbs>/qsub
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        $<TARGET_FILE_NAME:rlbs> $<TARGET_FILE_DIR:rlbs>/qstat
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        $<TARGET_FILE_NAME:rlbs> $<TARGET_FILE_DIR:rlbs>/qdel
+    DEPENDS rlbs
+)
+
 add_executable(rlbsd
     apps/rlbsd/main.cpp
 )
@@ -169,6 +185,23 @@ target_link_libraries(rlbs-agent
     PRIVATE
         rlbs_core
 )
+
+install(TARGETS rlbs rlbsd rlbs-agent
+    RUNTIME DESTINATION bin
+)
+
+# cmake has already made bin for the installed executables by this point. use
+# relative links so moving a staged install does not leave three broken paths
+install(CODE [[
+    foreach(alias IN ITEMS qsub qstat qdel)
+        set(alias_path "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/${alias}")
+        file(REMOVE "${alias_path}")
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink rlbs "${alias_path}"
+            COMMAND_ERROR_IS_FATAL ANY
+        )
+    endforeach()
+]])
 
 include(CTest)
 
@@ -262,6 +295,8 @@ if(BUILD_TESTING)
     add_executable(rlbs_daemon_tests
         tests/daemon/daemon_test.cpp
     )
+
+    add_dependencies(rlbs_daemon_tests pbs_aliases)
 
     target_link_libraries(rlbs_daemon_tests
         PRIVATE

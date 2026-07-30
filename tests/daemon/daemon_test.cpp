@@ -254,9 +254,19 @@ void test_real_cli_submits_to_daemon(
     TemporaryDirectory temporary;
     const auto database_path = temporary.path() / "rlbs.db";
     const auto socket_path = temporary.path() / "rlbs.sock";
+    const auto executable_directory = cli_executable.parent_path();
+    const auto qsub_executable = executable_directory / "qsub";
+    const auto qstat_executable = executable_directory / "qstat";
+    const auto qdel_executable = executable_directory / "qdel";
     auto database = rlbs::SqliteDatabase::open(database_path);
 
     expect(database.has_value(), "daemon integration database opens");
+    expect(std::filesystem::is_symlink(qsub_executable),
+           "qsub is a symlink to the native cli");
+    expect(std::filesystem::is_symlink(qstat_executable),
+           "qstat is a symlink to the native cli");
+    expect(std::filesystem::is_symlink(qdel_executable),
+           "qdel is a symlink to the native cli");
 
     if (!database) {
         return;
@@ -411,10 +421,9 @@ void test_real_cli_submits_to_daemon(
            "real rlbs nodes prints live cpu allocation");
 
     const auto cancelled = run_cli_command(
-        cli_executable, {"cancel", "--socket", socket_path.string(), "2"});
-    expect(cancelled.exit_code == 0, "real rlbs cancel exits successfully");
-    expect(cancelled.output == "cancellation requested for job 2\n",
-           "real rlbs cancel confirms the requested job");
+        qdel_executable, {"--socket", socket_path.string(), "2"});
+    expect(cancelled.exit_code == 0, "qdel exits successfully");
+    expect(cancelled.output.empty(), "successful qdel stays quiet like pbs");
 
     bool cancellation_stored = false;
 
@@ -447,12 +456,12 @@ void test_real_cli_submits_to_daemon(
                << "printf 'node='; cat \"$PBS_NODEFILE\"\n";
     }
 
-    const auto pbs_submitted = run_cli_command(
-        cli_executable,
-        {"submit", "--socket", socket_path.string(), pbs_script.string()});
-    expect(pbs_submitted.exit_code == 0, "real rlbs submits a pbs script");
-    expect(pbs_submitted.output == "submitted job 3\n",
-           "pbs script receives the next job id");
+    const auto pbs_submitted =
+        run_cli_command(qsub_executable,
+                        {"--socket", socket_path.string(), pbs_script.string()});
+    expect(pbs_submitted.exit_code == 0, "qsub submits a pbs script");
+    expect(pbs_submitted.output == "3\n",
+           "qsub prints only the assigned job id");
 
     bool pbs_completed = false;
 
@@ -474,6 +483,18 @@ void test_real_cli_submits_to_daemon(
            "pbs script receives directives and runtime variables");
     expect(std::filesystem::exists(temporary.path() / "pbs-script.err"),
            "pbs script creates its configured stderr file");
+
+    const auto qstat_queue = run_cli_command(
+        qstat_executable, {"--socket", socket_path.string()});
+    expect(qstat_queue.exit_code == 0, "plain qstat exits successfully");
+    expect(qstat_queue.output.contains("pbs-script"),
+           "plain qstat reuses the queue handler");
+
+    const auto qstat_status = run_cli_command(
+        qstat_executable, {"--socket", socket_path.string(), "3"});
+    expect(qstat_status.exit_code == 0, "qstat with a job id exits successfully");
+    expect(qstat_status.output.contains("job id: 3"),
+           "qstat with a job id reuses the status handler");
 
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }

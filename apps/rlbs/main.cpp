@@ -1,6 +1,7 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -10,6 +11,11 @@
 #include <rlbs/core/version.hpp>
 
 namespace {
+
+enum class CommandStyle {
+    native,
+    pbs,
+};
 
 [[nodiscard]] std::vector<std::string_view> command_arguments(int argc,
                                                               char* argv[]) {
@@ -23,9 +29,51 @@ namespace {
     return arguments;
 }
 
+[[nodiscard]] std::string_view executable_name(std::string_view path) {
+    const auto separator = path.find_last_of('/');
+    return separator == std::string_view::npos ? path
+                                               : path.substr(separator + 1);
+}
+
+[[nodiscard]] std::string command_name(std::string_view native_name,
+                                       CommandStyle style) {
+    if (style == CommandStyle::pbs) {
+        if (native_name == "submit") {
+            return "qsub";
+        }
+        if (native_name == "queue" || native_name == "status") {
+            return "qstat";
+        }
+        if (native_name == "cancel") {
+            return "qdel";
+        }
+    }
+
+    return "rlbs " + std::string{native_name};
+}
+
+[[nodiscard]] std::string_view qsub_usage() {
+    return R"usage(usage: qsub [--socket PATH] JOB.pbs
+
+the supported #PBS directives are -N, -l, -d, -V, -v, -o, and -e.
+)usage";
+}
+
+[[nodiscard]] std::string_view qstat_usage() {
+    return R"usage(usage: qstat [--socket PATH] [JOB_ID]
+
+without a job id qstat lists the queue. with one it shows that job.
+)usage";
+}
+
+[[nodiscard]] std::string_view qdel_usage() {
+    return R"usage(usage: qdel [--socket PATH] JOB_ID
+)usage";
+}
+
 void print_control_error(std::string_view command,
                          const rlbs::ControlSocketError& error) {
-    std::cerr << "rlbs " << command << ": " << error.message;
+    std::cerr << command << ": " << error.message;
 
     if (error.system_error != 0) {
         std::cerr << ": " << std::strerror(error.system_error);
@@ -34,17 +82,19 @@ void print_control_error(std::string_view command,
     std::cerr << '\n';
 }
 
-int submit(int argc, char* argv[]) {
+int submit(int argc, char* argv[], CommandStyle style) {
     auto command = rlbs::parse_submit_command(command_arguments(argc, argv));
+    const auto name = command_name("submit", style);
+    const auto usage =
+        style == CommandStyle::pbs ? qsub_usage() : rlbs::submit_usage();
 
     if (!command) {
-        std::cerr << "rlbs submit: " << command.error() << '\n'
-                  << rlbs::submit_usage();
+        std::cerr << name << ": " << command.error() << '\n' << usage;
         return 2;
     }
 
     if (command->show_help) {
-        std::cout << rlbs::submit_usage();
+        std::cout << usage;
         return 0;
     }
 
@@ -52,24 +102,32 @@ int submit(int argc, char* argv[]) {
     auto job_id = client.submit(command->spec);
 
     if (!job_id) {
-        print_control_error("submit", job_id.error());
+        print_control_error(name, job_id.error());
         return 1;
     }
 
-    std::cout << "submitted job " << *job_id << '\n';
+    if (style == CommandStyle::pbs) {
+        // pbs scripts tend to capture this value, so extra friendly prose here
+        // just turns into annoying string cleanup in every launcher
+        std::cout << *job_id << '\n';
+    } else {
+        std::cout << "submitted job " << *job_id << '\n';
+    }
     return 0;
 }
 
-int queue(int argc, char* argv[]) {
+int queue(int argc, char* argv[], CommandStyle style) {
     auto command = rlbs::parse_queue_command(command_arguments(argc, argv));
+    const auto name = command_name("queue", style);
+    const auto usage =
+        style == CommandStyle::pbs ? qstat_usage() : rlbs::queue_usage();
 
     if (!command) {
-        std::cerr << "rlbs queue: " << command.error() << '\n'
-                  << rlbs::queue_usage();
+        std::cerr << name << ": " << command.error() << '\n' << usage;
         return 2;
     }
     if (command->show_help) {
-        std::cout << rlbs::queue_usage();
+        std::cout << usage;
         return 0;
     }
 
@@ -77,7 +135,7 @@ int queue(int argc, char* argv[]) {
     auto jobs = client.queue();
 
     if (!jobs) {
-        print_control_error("queue", jobs.error());
+        print_control_error(name, jobs.error());
         return 1;
     }
 
@@ -85,16 +143,18 @@ int queue(int argc, char* argv[]) {
     return 0;
 }
 
-int status(int argc, char* argv[]) {
+int status(int argc, char* argv[], CommandStyle style) {
     auto command = rlbs::parse_status_command(command_arguments(argc, argv));
+    const auto name = command_name("status", style);
+    const auto usage =
+        style == CommandStyle::pbs ? qstat_usage() : rlbs::status_usage();
 
     if (!command) {
-        std::cerr << "rlbs status: " << command.error() << '\n'
-                  << rlbs::status_usage();
+        std::cerr << name << ": " << command.error() << '\n' << usage;
         return 2;
     }
     if (command->show_help) {
-        std::cout << rlbs::status_usage();
+        std::cout << usage;
         return 0;
     }
 
@@ -102,7 +162,7 @@ int status(int argc, char* argv[]) {
     auto job = client.status(command->job_id);
 
     if (!job) {
-        print_control_error("status", job.error());
+        print_control_error(name, job.error());
         return 1;
     }
 
@@ -110,16 +170,18 @@ int status(int argc, char* argv[]) {
     return 0;
 }
 
-int cancel(int argc, char* argv[]) {
+int cancel(int argc, char* argv[], CommandStyle style) {
     auto command = rlbs::parse_cancel_command(command_arguments(argc, argv));
+    const auto name = command_name("cancel", style);
+    const auto usage =
+        style == CommandStyle::pbs ? qdel_usage() : rlbs::cancel_usage();
 
     if (!command) {
-        std::cerr << "rlbs cancel: " << command.error() << '\n'
-                  << rlbs::cancel_usage();
+        std::cerr << name << ": " << command.error() << '\n' << usage;
         return 2;
     }
     if (command->show_help) {
-        std::cout << rlbs::cancel_usage();
+        std::cout << usage;
         return 0;
     }
 
@@ -127,11 +189,13 @@ int cancel(int argc, char* argv[]) {
     auto job_id = client.cancel(command->job_id);
 
     if (!job_id) {
-        print_control_error("cancel", job_id.error());
+        print_control_error(name, job_id.error());
         return 1;
     }
 
-    std::cout << "cancellation requested for job " << *job_id << '\n';
+    if (style == CommandStyle::native) {
+        std::cout << "cancellation requested for job " << *job_id << '\n';
+    }
     return 0;
 }
 
@@ -152,7 +216,7 @@ int nodes(int argc, char* argv[]) {
     auto node_list = client.nodes();
 
     if (!node_list) {
-        print_control_error("nodes", node_list.error());
+        print_control_error("rlbs nodes", node_list.error());
         return 1;
     }
 
@@ -160,9 +224,45 @@ int nodes(int argc, char* argv[]) {
     return 0;
 }
 
+[[nodiscard]] bool qstat_has_job_id(int argc, char* argv[]) {
+    // qstat owns both queue and status. skip our socket extension and its value,
+    // then any argument left that is not help has to be the requested job id
+    for (int index = 0; index < argc; ++index) {
+        const std::string_view argument{argv[index]};
+
+        if (argument == "--socket") {
+            ++index;
+            continue;
+        }
+        if (argument != "--help" && argument != "-h") {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
+    const auto invoked_as =
+        executable_name(argc > 0 ? std::string_view{argv[0]} : "rlbs");
+
+    // these are aliases in the literal filesystem sense. once they land here
+    // they use the same parsers, socket client, and handlers as the native cli
+    if (invoked_as == "qsub") {
+        return submit(argc - 1, argv + 1, CommandStyle::pbs);
+    }
+    if (invoked_as == "qdel") {
+        return cancel(argc - 1, argv + 1, CommandStyle::pbs);
+    }
+    if (invoked_as == "qstat") {
+        if (qstat_has_job_id(argc - 1, argv + 1)) {
+            return status(argc - 1, argv + 1, CommandStyle::pbs);
+        }
+        return queue(argc - 1, argv + 1, CommandStyle::pbs);
+    }
+
     if (argc < 2) {
         std::cout << rlbs::cli_usage();
         return 0;
@@ -181,16 +281,16 @@ int main(int argc, char* argv[]) {
     }
 
     if (command == "submit") {
-        return submit(argc - 2, argv + 2);
+        return submit(argc - 2, argv + 2, CommandStyle::native);
     }
     if (command == "queue") {
-        return queue(argc - 2, argv + 2);
+        return queue(argc - 2, argv + 2, CommandStyle::native);
     }
     if (command == "status") {
-        return status(argc - 2, argv + 2);
+        return status(argc - 2, argv + 2, CommandStyle::native);
     }
     if (command == "cancel") {
-        return cancel(argc - 2, argv + 2);
+        return cancel(argc - 2, argv + 2, CommandStyle::native);
     }
     if (command == "nodes") {
         return nodes(argc - 2, argv + 2);
