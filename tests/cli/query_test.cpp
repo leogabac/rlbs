@@ -66,6 +66,19 @@ void test_cancel_parser() {
     expect(!rlbs::parse_cancel_command({}), "cancel requires a job id");
 }
 
+void test_nodes_parser() {
+    const std::array<std::string_view, 2> arguments{"--socket",
+                                                    "/tmp/custom.sock"};
+    const auto parsed = rlbs::parse_nodes_command(arguments);
+
+    expect(parsed && parsed->socket_path == "/tmp/custom.sock",
+           "nodes parses its socket");
+
+    const std::array<std::string_view, 1> unknown{"surprise"};
+    expect(!rlbs::parse_nodes_command(unknown),
+           "nodes rejects unexpected arguments");
+}
+
 void test_queue_format() {
     const std::vector<rlbs::JobSummary> jobs{
         {
@@ -131,14 +144,39 @@ void test_status_format() {
            "status explains default output paths");
 }
 
+void test_nodes_format() {
+    const std::vector<rlbs::NodeSummary> nodes{
+        {
+            .id = "head",
+            .state = rlbs::NodeState::online,
+            .total = {.cpus = 8, .memory_mb = 32768, .gpus = 2},
+            .reserved = {.cpus = 2, .memory_mb = 4096, .gpus = 1},
+            .allocated = {.cpus = 4, .memory_mb = 8192, .gpus = 0},
+            .available = {.cpus = 2, .memory_mb = 20480, .gpus = 1},
+        },
+    };
+    const auto output = rlbs::format_nodes(nodes);
+
+    expect(output.contains("cpus t/r/u/a"),
+           "nodes explains the resource column order");
+    expect(output.contains("head"), "nodes prints the node id");
+    expect(output.contains("online"), "nodes prints the node state");
+    expect(output.contains("8/2/4/2"), "nodes prints cpu accounting");
+    expect(output.contains("32768/4096/8192/20480"),
+           "nodes prints memory accounting");
+    expect(output.contains("2/1/0/1"), "nodes prints gpu accounting");
+}
+
 } // namespace
 
 int main() {
     test_queue_parser();
     test_status_parser();
     test_cancel_parser();
+    test_nodes_parser();
     test_queue_format();
     test_status_format();
+    test_nodes_format();
 
     if (failures == 0) {
         std::cout << "all query cli tests passed\n";

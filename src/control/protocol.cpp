@@ -14,10 +14,12 @@ constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
 constexpr std::uint8_t cancel_request_type = 4;
+constexpr std::uint8_t nodes_request_type = 5;
 constexpr std::uint8_t submit_response_type = 129;
 constexpr std::uint8_t queue_response_type = 130;
 constexpr std::uint8_t status_response_type = 131;
 constexpr std::uint8_t cancel_response_type = 132;
+constexpr std::uint8_t nodes_response_type = 133;
 constexpr std::uint8_t error_response_type = 255;
 constexpr std::uint32_t max_collection_size = 65536;
 
@@ -647,6 +649,106 @@ decode_job_summary(Reader& reader) {
     };
 }
 
+void encode_capacity(Writer& writer, const ResourceCapacity& capacity) {
+    writer.integer32(capacity.cpus);
+    writer.integer64(capacity.memory_mb);
+    writer.integer32(capacity.gpus);
+}
+
+[[nodiscard]] std::expected<ResourceCapacity, ProtocolError>
+decode_capacity(Reader& reader) {
+    auto cpus = reader.integer32();
+    auto memory_mb = reader.integer64();
+    auto gpus = reader.integer32();
+
+    if (!cpus) {
+        return std::unexpected{std::move(cpus.error())};
+    }
+    if (!memory_mb) {
+        return std::unexpected{std::move(memory_mb.error())};
+    }
+    if (!gpus) {
+        return std::unexpected{std::move(gpus.error())};
+    }
+
+    return ResourceCapacity{
+        .cpus = *cpus,
+        .memory_mb = *memory_mb,
+        .gpus = *gpus,
+    };
+}
+
+void encode_node_state(Writer& writer, NodeState state) {
+    writer.integer8(static_cast<std::uint8_t>(state));
+}
+
+[[nodiscard]] std::expected<NodeState, ProtocolError>
+decode_node_state(Reader& reader) {
+    auto encoded = reader.integer8();
+
+    if (!encoded) {
+        return std::unexpected{std::move(encoded.error())};
+    }
+    if (*encoded > static_cast<std::uint8_t>(NodeState::offline)) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "node state is unknown")};
+    }
+
+    return static_cast<NodeState>(*encoded);
+}
+
+[[nodiscard]] std::expected<void, ProtocolError>
+encode_node_summary(Writer& writer, const NodeSummary& node) {
+    if (auto written = writer.text(node.id); !written) {
+        return written;
+    }
+
+    encode_node_state(writer, node.state);
+    encode_capacity(writer, node.total);
+    encode_capacity(writer, node.reserved);
+    encode_capacity(writer, node.allocated);
+    encode_capacity(writer, node.available);
+    return {};
+}
+
+[[nodiscard]] std::expected<NodeSummary, ProtocolError>
+decode_node_summary(Reader& reader) {
+    auto id = reader.text();
+    auto state = decode_node_state(reader);
+    auto total = decode_capacity(reader);
+    auto reserved = decode_capacity(reader);
+    auto allocated = decode_capacity(reader);
+    auto available = decode_capacity(reader);
+
+    if (!id) {
+        return std::unexpected{std::move(id.error())};
+    }
+    if (!state) {
+        return std::unexpected{std::move(state.error())};
+    }
+    if (!total) {
+        return std::unexpected{std::move(total.error())};
+    }
+    if (!reserved) {
+        return std::unexpected{std::move(reserved.error())};
+    }
+    if (!allocated) {
+        return std::unexpected{std::move(allocated.error())};
+    }
+    if (!available) {
+        return std::unexpected{std::move(available.error())};
+    }
+
+    return NodeSummary{
+        .id = std::move(*id),
+        .state = *state,
+        .total = *total,
+        .reserved = *reserved,
+        .allocated = *allocated,
+        .available = *available,
+    };
+}
+
 [[nodiscard]] std::expected<std::vector<std::byte>, ProtocolError>
 finish_frame(Writer payload) {
     // the first four bytes describe the payload length. seqpacket gives us a
@@ -742,9 +844,11 @@ encode_request(const ControlRequest& request) {
     } else if (const auto* status = std::get_if<StatusRequest>(&request)) {
         write_header(payload, status_request_type);
         payload.integer64(status->job_id);
-    } else {
+    } else if (const auto* cancel = std::get_if<CancelRequest>(&request)) {
         write_header(payload, cancel_request_type);
-        payload.integer64(std::get<CancelRequest>(request).job_id);
+        payload.integer64(cancel->job_id);
+    } else {
+        write_header(payload, nodes_request_type);
     }
 
     return finish_frame(std::move(payload));
@@ -792,6 +896,8 @@ decode_request(const std::vector<std::byte>& frame) {
         }
 
         request = CancelRequest{.job_id = *job_id};
+    } else if (*type == nodes_request_type) {
+        request = NodesRequest{};
     } else {
         return std::unexpected{
             error(ProtocolOperation::decode, "unknown control request type")};
@@ -835,6 +941,20 @@ encode_response(const ControlResponse& response) {
     } else if (const auto* cancelled = std::get_if<CancelResponse>(&response)) {
         write_header(payload, cancel_response_type);
         payload.integer64(cancelled->job_id);
+    } else if (const auto* nodes = std::get_if<NodesResponse>(&response)) {
+        if (nodes->nodes.size() > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::encode, "node list is too large")};
+        }
+
+        write_header(payload, nodes_response_type);
+        payload.integer32(static_cast<std::uint32_t>(nodes->nodes.size()));
+
+        for (const auto& node : nodes->nodes) {
+            if (auto encoded = encode_node_summary(payload, node); !encoded) {
+                return std::unexpected{std::move(encoded.error())};
+            }
+        }
     } else {
         write_header(payload, error_response_type);
 
@@ -914,6 +1034,31 @@ decode_response(const std::vector<std::byte>& frame) {
         }
 
         response = CancelResponse{.job_id = *job_id};
+    } else if (*type == nodes_response_type) {
+        auto count = reader.integer32();
+
+        if (!count) {
+            return std::unexpected{std::move(count.error())};
+        }
+        if (*count > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::decode, "node list is too large")};
+        }
+
+        std::vector<NodeSummary> nodes;
+        nodes.reserve(*count);
+
+        for (std::uint32_t index = 0; index < *count; ++index) {
+            auto node = decode_node_summary(reader);
+
+            if (!node) {
+                return std::unexpected{std::move(node.error())};
+            }
+
+            nodes.push_back(std::move(*node));
+        }
+
+        response = NodesResponse{.nodes = std::move(nodes)};
     } else if (*type == error_response_type) {
         auto message = reader.text();
 

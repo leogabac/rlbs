@@ -91,10 +91,13 @@ void test_query_requests_round_trip() {
         rlbs::ControlRequest{rlbs::StatusRequest{.job_id = 73}});
     const auto cancel = rlbs::encode_request(
         rlbs::ControlRequest{rlbs::CancelRequest{.job_id = 74}});
+    const auto nodes =
+        rlbs::encode_request(rlbs::ControlRequest{rlbs::NodesRequest{}});
 
     expect(queue.has_value(), "queue request encodes");
     expect(status.has_value(), "status request encodes");
     expect(cancel.has_value(), "cancel request encodes");
+    expect(nodes.has_value(), "nodes request encodes");
 
     if (queue) {
         const auto decoded = rlbs::decode_request(*queue);
@@ -112,6 +115,12 @@ void test_query_requests_round_trip() {
         const auto decoded = rlbs::decode_request(*cancel);
         expect(decoded && std::get<rlbs::CancelRequest>(*decoded).job_id == 74,
                "cancel request keeps its job id");
+    }
+
+    if (nodes) {
+        const auto decoded = rlbs::decode_request(*nodes);
+        expect(decoded && std::holds_alternative<rlbs::NodesRequest>(*decoded),
+               "nodes request keeps its type");
     }
 }
 
@@ -183,9 +192,23 @@ void test_query_responses_round_trip() {
     const auto queue = rlbs::encode_response(expected_queue);
     const auto status =
         rlbs::encode_response(rlbs::StatusResponse{.job = expected_job});
+    const auto nodes = rlbs::encode_response(rlbs::NodesResponse{
+        .nodes =
+            {
+                {
+                    .id = "head",
+                    .state = rlbs::NodeState::online,
+                    .total = {.cpus = 8, .memory_mb = 32768, .gpus = 2},
+                    .reserved = {.cpus = 2, .memory_mb = 4096, .gpus = 1},
+                    .allocated = {.cpus = 4, .memory_mb = 8192, .gpus = 0},
+                    .available = {.cpus = 2, .memory_mb = 20480, .gpus = 1},
+                },
+            },
+    });
 
     expect(queue.has_value(), "queue response encodes");
     expect(status.has_value(), "status response encodes");
+    expect(nodes.has_value(), "nodes response encodes");
 
     if (queue) {
         const auto decoded = rlbs::decode_response(*queue);
@@ -218,6 +241,26 @@ void test_query_responses_round_trip() {
                    "status response keeps state");
             expect(job.result && job.result->exit_code == 7,
                    "status response keeps process results");
+        }
+    }
+
+    if (nodes) {
+        const auto decoded = rlbs::decode_response(*nodes);
+        expect(decoded.has_value(), "nodes response decodes");
+
+        if (decoded) {
+            const auto& node =
+                std::get<rlbs::NodesResponse>(*decoded).nodes.front();
+            expect(node.id == "head", "nodes response keeps the node id");
+            expect(node.state == rlbs::NodeState::online,
+                   "nodes response keeps node state");
+            expect(node.total.cpus == 8, "nodes response keeps total capacity");
+            expect(node.reserved.memory_mb == 4096,
+                   "nodes response keeps reserved capacity");
+            expect(node.allocated.cpus == 4,
+                   "nodes response keeps allocated capacity");
+            expect(node.available.gpus == 1,
+                   "nodes response keeps available capacity");
         }
     }
 }

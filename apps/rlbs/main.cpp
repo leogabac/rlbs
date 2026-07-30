@@ -135,6 +135,31 @@ int cancel(int argc, char* argv[]) {
     return 0;
 }
 
+int nodes(int argc, char* argv[]) {
+    auto command = rlbs::parse_nodes_command(command_arguments(argc, argv));
+
+    if (!command) {
+        std::cerr << "rlbs nodes: " << command.error() << '\n'
+                  << rlbs::nodes_usage();
+        return 2;
+    }
+    if (command->show_help) {
+        std::cout << rlbs::nodes_usage();
+        return 0;
+    }
+
+    rlbs::ControlClient client{command->socket_path};
+    auto node_list = client.nodes();
+
+    if (!node_list) {
+        print_control_error("nodes", node_list.error());
+        return 1;
+    }
+
+    std::cout << rlbs::format_nodes(*node_list);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -166,6 +191,9 @@ int main(int argc, char* argv[]) {
     }
     if (command == "cancel") {
         return cancel(argc - 2, argv + 2);
+    }
+    if (command == "nodes") {
+        return nodes(argc - 2, argv + 2);
     }
 
     std::cerr << "rlbs: unknown command: " << command << '\n'

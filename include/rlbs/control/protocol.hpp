@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <rlbs/core/job.hpp>
+#include <rlbs/core/node.hpp>
 #include <rlbs/core/types.hpp>
 
 namespace rlbs {
@@ -38,8 +39,10 @@ struct CancelRequest {
     JobId job_id{0};
 };
 
-using ControlRequest =
-    std::variant<SubmitRequest, QueueRequest, StatusRequest, CancelRequest>;
+struct NodesRequest {};
+
+using ControlRequest = std::variant<SubmitRequest, QueueRequest, StatusRequest,
+                                    CancelRequest, NodesRequest>;
 
 struct SubmitResponse {
     JobId job_id{0};
@@ -67,13 +70,26 @@ struct CancelResponse {
     JobId job_id{0};
 };
 
+struct NodeSummary {
+    NodeId id;
+    NodeState state{NodeState::offline};
+    ResourceCapacity total;
+    ResourceCapacity reserved;
+    ResourceCapacity allocated;
+    ResourceCapacity available;
+};
+
+struct NodesResponse {
+    std::vector<NodeSummary> nodes;
+};
+
 struct ErrorResponse {
     std::string message;
 };
 
 using ControlResponse =
     std::variant<SubmitResponse, QueueResponse, StatusResponse, CancelResponse,
-                 ErrorResponse>;
+                 NodesResponse, ErrorResponse>;
 
 // frames carry their own size even though unix seqpacket already has packet
 // boundaries. tcp can reuse the exact bytes later without inventing framing

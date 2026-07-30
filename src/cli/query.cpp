@@ -68,6 +68,26 @@ void write_command(std::ostringstream& output,
     }
 }
 
+[[nodiscard]] std::string_view node_state_name(NodeState state) {
+    switch (state) {
+    case NodeState::online:
+        return "online";
+    case NodeState::draining:
+        return "draining";
+    case NodeState::offline:
+        return "offline";
+    }
+
+    return "unknown";
+}
+
+template <typename Integer>
+[[nodiscard]] std::string resource_cell(Integer total, Integer reserved,
+                                        Integer allocated, Integer available) {
+    return std::to_string(total) + '/' + std::to_string(reserved) + '/' +
+           std::to_string(allocated) + '/' + std::to_string(available);
+}
+
 } // namespace
 
 std::expected<QueueCommand, std::string>
@@ -208,6 +228,38 @@ parse_cancel_command(std::span<const std::string_view> arguments) {
     return command;
 }
 
+std::expected<NodesCommand, std::string>
+parse_nodes_command(std::span<const std::string_view> arguments) {
+    NodesCommand command;
+
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto option = arguments[index];
+
+        if (option == "--help" || option == "-h") {
+            command.show_help = true;
+            continue;
+        }
+        if (option != "--socket") {
+            return std::unexpected{"unknown nodes option: " +
+                                   std::string{option}};
+        }
+
+        auto value = take_value(arguments, index);
+
+        if (!value) {
+            return std::unexpected{std::move(value.error())};
+        }
+
+        command.socket_path = *value;
+    }
+
+    if (command.socket_path.empty()) {
+        return std::unexpected{"--socket cannot be empty"};
+    }
+
+    return command;
+}
+
 std::string format_queue(const std::vector<JobSummary>& jobs) {
     std::ostringstream output;
     output << std::left << std::setw(8) << "job id" << std::setw(12) << "state"
@@ -280,6 +332,32 @@ std::string format_status(const Job& job) {
     return output.str();
 }
 
+std::string format_nodes(const std::vector<NodeSummary>& nodes) {
+    std::ostringstream output;
+    output << std::left << std::setw(16) << "node" << std::setw(12) << "state"
+           << std::setw(22) << "cpus t/r/u/a" << std::setw(28)
+           << "memory mb t/r/u/a" << "gpus t/r/u/a\n";
+
+    for (const auto& node : nodes) {
+        // each resource cell is total/reserved/used/available. keeping the
+        // same order for all three is dense, but still less awful than fourteen
+        // mostly-empty columns on a laptop terminal
+        output << std::left << std::setw(16) << node.id << std::setw(12)
+               << node_state_name(node.state) << std::setw(22)
+               << resource_cell(node.total.cpus, node.reserved.cpus,
+                                node.allocated.cpus, node.available.cpus)
+               << std::setw(28)
+               << resource_cell(node.total.memory_mb, node.reserved.memory_mb,
+                                node.allocated.memory_mb,
+                                node.available.memory_mb)
+               << resource_cell(node.total.gpus, node.reserved.gpus,
+                                node.allocated.gpus, node.available.gpus)
+               << '\n';
+    }
+
+    return output.str();
+}
+
 std::string_view queue_usage() {
     return R"usage(usage: rlbs queue [options]
 
@@ -300,6 +378,17 @@ options:
 
 std::string_view cancel_usage() {
     return R"usage(usage: rlbs cancel [options] JOB_ID
+
+options:
+  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  -h, --help             show this help
+)usage";
+}
+
+std::string_view nodes_usage() {
+    return R"usage(usage: rlbs nodes [options]
+
+resource columns use total/reserved/used/available.
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)

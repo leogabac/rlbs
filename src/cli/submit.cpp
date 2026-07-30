@@ -245,6 +245,7 @@ commands:
   queue                  list jobs
   status JOB_ID          show one job
   cancel JOB_ID          cancel one job
+  nodes                  show node capacity
 
 general:
   --version              show the rlbs version

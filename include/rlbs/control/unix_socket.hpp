@@ -90,6 +90,9 @@ class ControlClient {
     [[nodiscard]] std::expected<JobId, ControlSocketError>
     cancel(JobId job_id) const;
 
+    [[nodiscard]] std::expected<std::vector<NodeSummary>, ControlSocketError>
+    nodes() const;
+
   private:
     [[nodiscard]] std::expected<ControlResponse, ControlSocketError>
     request(const ControlRequest& request) const;

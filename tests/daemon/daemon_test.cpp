@@ -400,6 +400,16 @@ void test_real_cli_submits_to_daemon(
 
     expect(running, "real daemon starts the cancellation fixture");
 
+    const auto nodes = run_cli_command(
+        cli_executable, {"nodes", "--socket", socket_path.string()});
+    expect(nodes.exit_code == 0, "real rlbs nodes exits successfully");
+    expect(nodes.output.contains("local"),
+           "real rlbs nodes prints the local node");
+    expect(nodes.output.contains("online"),
+           "real rlbs nodes prints the node state");
+    expect(nodes.output.contains("2/0/2/0"),
+           "real rlbs nodes prints live cpu allocation");
+
     const auto cancelled = run_cli_command(
         cli_executable, {"cancel", "--socket", socket_path.string(), "2"});
     expect(cancelled.exit_code == 0, "real rlbs cancel exits successfully");

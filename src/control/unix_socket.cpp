@@ -256,14 +256,30 @@ receive_frame(int socket) {
         return StatusResponse{.job = std::move(**job)};
     }
 
-    const auto job_id = std::get<CancelRequest>(request).job_id;
-    auto cancelled = coordinator.cancel(job_id);
+    if (const auto* cancel = std::get_if<CancelRequest>(&request)) {
+        auto cancelled = coordinator.cancel(cancel->job_id);
 
-    if (!cancelled) {
-        return ErrorResponse{.message = cancelled.error().message};
+        if (!cancelled) {
+            return ErrorResponse{.message = cancelled.error().message};
+        }
+
+        return CancelResponse{.job_id = cancel->job_id};
     }
 
-    return CancelResponse{.job_id = job_id};
+    const auto& node = coordinator.local_node();
+    return NodesResponse{
+        .nodes =
+            {
+                {
+                    .id = std::string{node.id()},
+                    .state = node.state(),
+                    .total = node.total(),
+                    .reserved = node.reserved(),
+                    .allocated = node.allocated(),
+                    .available = node.available(),
+                },
+            },
+    };
 }
 
 void send_error_response(int socket, std::string_view message) {
@@ -490,6 +506,22 @@ ControlClient::cancel(JobId job_id) const {
     return std::unexpected{
         error(ControlSocketOperation::server_response, EPROTO,
               "daemon returned the wrong response to cancel")};
+}
+
+std::expected<std::vector<NodeSummary>, ControlSocketError>
+ControlClient::nodes() const {
+    auto response = request(ControlRequest{NodesRequest{}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* nodes = std::get_if<NodesResponse>(&*response)) {
+        return std::move(nodes->nodes);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to nodes")};
 }
 
 std::expected<ControlResponse, ControlSocketError>
