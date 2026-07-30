@@ -1,5 +1,8 @@
 #include <rlbs/cli/submit.hpp>
 
+#include <rlbs/cli/duration.hpp>
+#include <rlbs/cli/pbs_script.hpp>
+
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -8,8 +11,6 @@
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <rlbs/cli/pbs_script.hpp>
 
 extern char** environ;
 
@@ -214,6 +215,15 @@ parse_submit_command(std::span<const std::string_view> arguments) {
                 return std::unexpected{std::move(parsed.error())};
             }
             command.spec.resources.gpus = *parsed;
+        } else if (option == "--walltime") {
+            used_native_job_option = true;
+            auto parsed = parse_walltime(*value);
+
+            if (!parsed) {
+                return std::unexpected{std::move(parsed.error())};
+            }
+
+            command.spec.walltime = *parsed;
         } else if (option == "--cwd") {
             used_native_job_option = true;
             requested_directory = std::filesystem::path{*value};
@@ -300,6 +310,7 @@ options:
   --cpus N               requested cpus (default: 1)
   --memory-mb N          requested memory in mb (default: 0)
   --gpus N               requested whole gpus (default: 0)
+  --walltime HH:MM:SS    maximum execution time
   --cwd PATH             job working directory (default: current directory)
   --env NAME=VALUE       add or override an environment variable
   --no-inherit-env       start from only the supplied --env values

@@ -98,8 +98,8 @@ void test_initializes_and_reopens_database() {
         const auto version = database->schema_version();
         const auto foreign_keys = database->foreign_keys_enabled();
 
-        expect(version && *version == 1,
-               "a new database uses schema version 1");
+        expect(version && *version == 2,
+               "a new database uses schema version 2");
         expect(foreign_keys && *foreign_keys,
                "foreign keys are enabled on the rlbs connection");
     }
@@ -118,7 +118,7 @@ void test_initializes_and_reopens_database() {
 
     if (reopened) {
         const auto version = reopened->schema_version();
-        expect(version && *version == 1,
+        expect(version && *version == 2,
                "reopening does not rerun or change the schema");
     }
 }
@@ -135,7 +135,7 @@ void test_rejects_newer_schema() {
         return;
     }
 
-    expect(sqlite3_exec(connection, "PRAGMA user_version = 2;", nullptr,
+    expect(sqlite3_exec(connection, "PRAGMA user_version = 3;", nullptr,
                         nullptr, nullptr) == SQLITE_OK,
            "future database fixture sets its version");
     static_cast<void>(sqlite3_close(connection));

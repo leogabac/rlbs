@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 
@@ -26,6 +27,7 @@ struct Job {
     JobState state{JobState::pending};
     std::optional<NodeId> assigned_node;
     std::optional<JobResult> result;
+    std::optional<std::chrono::seconds> execution_time;
 };
 
 [[nodiscard]] bool is_terminal(JobState state);

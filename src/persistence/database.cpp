@@ -7,7 +7,7 @@
 namespace rlbs {
 namespace {
 
-constexpr int current_schema_version = 1;
+constexpr int current_schema_version = 2;
 
 // sqlite statements need finalizing on every return path, including the
 // annoying ones. this little owner keeps that cleanup local instead of trusting
@@ -119,6 +119,15 @@ CREATE INDEX job_events_job_index ON job_events(job_id, id);
 PRAGMA user_version = 1;
 )sql";
 
+constexpr const char* schema_v2 = R"sql(
+ALTER TABLE jobs ADD COLUMN walltime_seconds INTEGER
+    CHECK (walltime_seconds IS NULL OR walltime_seconds > 0);
+ALTER TABLE jobs ADD COLUMN started_at INTEGER;
+ALTER TABLE jobs ADD COLUMN finished_at INTEGER;
+
+PRAGMA user_version = 2;
+)sql";
+
 } // namespace
 
 SqliteDatabase::SqliteDatabase(sqlite3* connection) : connection_{connection} {}
@@ -200,10 +209,20 @@ std::expected<void, DatabaseError> SqliteDatabase::migrate() {
         return begun;
     }
 
-    if (auto created = execute(schema_v1, DatabaseOperation::migrate);
-        !created) {
-        static_cast<void>(execute("ROLLBACK;", DatabaseOperation::migrate));
-        return created;
+    if (*version < 1) {
+        if (auto created = execute(schema_v1, DatabaseOperation::migrate);
+            !created) {
+            static_cast<void>(execute("ROLLBACK;", DatabaseOperation::migrate));
+            return created;
+        }
+    }
+
+    if (*version < 2) {
+        if (auto upgraded = execute(schema_v2, DatabaseOperation::migrate);
+            !upgraded) {
+            static_cast<void>(execute("ROLLBACK;", DatabaseOperation::migrate));
+            return upgraded;
+        }
     }
 
     if (auto committed = execute("COMMIT;", DatabaseOperation::migrate);

@@ -200,6 +200,8 @@ void test_config_parser() {
         "head",
         "--socket",
         "/tmp/custom.sock",
+        "--spool",
+        "/tmp/custom-spool",
         "--cpus",
         "12",
         "--memory-mb",
@@ -224,6 +226,8 @@ void test_config_parser() {
                "database path parses");
         expect(parsed->node_id == "head", "node id parses");
         expect(parsed->socket_path == "/tmp/custom.sock", "socket path parses");
+        expect(parsed->spool_path == "/tmp/custom-spool",
+               "spool path parses");
         expect(parsed->capacity.cpus == 12, "cpu capacity parses");
         expect(parsed->capacity.memory_mb == 64000, "memory capacity parses");
         expect(parsed->capacity.gpus == 2, "gpu capacity parses");
@@ -448,6 +452,7 @@ void test_real_cli_submits_to_daemon(
         script << "#!/bin/sh\n"
                << "#PBS -N pbs-script\n"
                << "#PBS -l ncpus=1,mem=64mb\n"
+               << "#PBS -l walltime=00:05:00\n"
                << "#PBS -d " << temporary.path().string() << "\n"
                << "#PBS -o pbs-script.out\n"
                << "#PBS -e pbs-script.err\n"
@@ -489,12 +494,16 @@ void test_real_cli_submits_to_daemon(
     expect(qstat_queue.exit_code == 0, "plain qstat exits successfully");
     expect(qstat_queue.output.contains("pbs-script"),
            "plain qstat reuses the queue handler");
+    expect(qstat_queue.output.contains("00:05:00"),
+           "qstat queue prints requested walltime");
 
     const auto qstat_status = run_cli_command(
         qstat_executable, {"--socket", socket_path.string(), "3"});
     expect(qstat_status.exit_code == 0, "qstat with a job id exits successfully");
     expect(qstat_status.output.contains("job id: 3"),
            "qstat with a job id reuses the status handler");
+    expect(qstat_status.output.contains("execution time:"),
+           "qstat status prints execution time");
 
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }

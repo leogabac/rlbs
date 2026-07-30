@@ -67,6 +67,7 @@ int main(int argc, char* argv[]) {
         repository,
         std::move(local_node),
         scheduler,
+        config->spool_path,
         &logger,
     };
     auto control = rlbs::ControlServer::listen(config->socket_path, repository,
@@ -93,6 +94,7 @@ int main(int argc, char* argv[]) {
             << " node=" << config->node_id
             << " database=" << config->database_path
             << " socket=" << config->socket_path
+            << " spool=" << config->spool_path
             << " cpus=" << config->capacity.cpus
             << " memory_mb=" << config->capacity.memory_mb
             << " gpus=" << config->capacity.gpus

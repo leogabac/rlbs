@@ -72,6 +72,7 @@ void test_complete_script() {
 # this ordinary comment does not close the directive section
 #PBS -N "python runtime"
 #PBS -l select=1:ncpus=4:mem=2gb:ngpus=1
+#PBS -l walltime=01:02:03
 #PBS -d /tmp
 #PBS -V
 #PBS -v EXPLICIT=hello,FROM_SUBMIT
@@ -97,6 +98,8 @@ print("hello")
     expect(parsed->resources.cpus == 4, "pbs select sets ncpus");
     expect(parsed->resources.memory_mb == 2048, "pbs select converts memory");
     expect(parsed->resources.gpus == 1, "pbs select sets ngpus");
+    expect(parsed->walltime == std::chrono::seconds{3723},
+           "pbs walltime parses");
     expect(parsed->working_directory == "/tmp", "pbs -d sets the directory");
     expect(parsed->stdout_path == "python.out", "pbs -o sets stdout");
     expect(parsed->stderr_path == "python.err", "pbs -e sets stderr");
@@ -149,7 +152,7 @@ void test_unsupported_requests_are_rejected() {
 
     write_file(multi_node, "#PBS -l select=2:ncpus=1\n/bin/true\n");
     write_file(joined, "#PBS -j oe\n/bin/true\n");
-    write_file(unknown, "#PBS -l walltime=01:00:00\n/bin/true\n");
+    write_file(unknown, "#PBS -l mystery=1\n/bin/true\n");
     write_file(misplaced, "echo started\n#PBS -N too-late\n");
 
     const std::span<const rlbs::EnvironmentVariable> environment;

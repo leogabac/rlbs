@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -26,6 +27,7 @@ struct JobSpec {
     std::optional<std::filesystem::path> stdout_path;
     std::optional<std::filesystem::path> stderr_path;
     bool append_output{false};
+    std::optional<std::chrono::seconds> walltime;
 };
 
 } // namespace rlbs

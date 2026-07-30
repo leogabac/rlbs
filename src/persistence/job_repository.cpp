@@ -131,6 +131,23 @@ bind_optional_text(sqlite3* connection, sqlite3_stmt* statement, int position,
 }
 
 [[nodiscard]] std::expected<void, RepositoryError>
+bind_optional_integer(sqlite3* connection, sqlite3_stmt* statement, int position,
+                      const std::optional<std::int64_t>& value,
+                      RepositoryOperation operation) {
+    if (!value) {
+        const int result = sqlite3_bind_null(statement, position);
+
+        if (result != SQLITE_OK) {
+            return std::unexpected{error(connection, operation, result)};
+        }
+
+        return {};
+    }
+
+    return bind_integer(connection, statement, position, *value, operation);
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
 bind_optional_path(sqlite3* connection, sqlite3_stmt* statement, int position,
                    const std::optional<std::filesystem::path>& path,
                    RepositoryOperation operation) {
@@ -184,6 +201,15 @@ optional_column_integer(sqlite3_stmt* statement, int column) {
     }
 
     return sqlite3_column_int(statement, column);
+}
+
+[[nodiscard]] std::optional<std::int64_t>
+optional_column_integer64(sqlite3_stmt* statement, int column) {
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+
+    return sqlite3_column_int64(statement, column);
 }
 
 [[nodiscard]] std::optional<JobState> decode_state(std::string_view state) {
@@ -304,7 +330,16 @@ SET
     assigned_node = COALESCE(?, assigned_node),
     exit_code = ?,
     terminating_signal = ?,
-    dumped_core = ?
+    dumped_core = ?,
+    started_at = CASE
+        WHEN ? = 'running' THEN COALESCE(started_at, unixepoch())
+        ELSE started_at
+    END,
+    finished_at = CASE
+        WHEN ? IN ('completed', 'failed', 'cancelled')
+            THEN COALESCE(finished_at, unixepoch())
+        ELSE finished_at
+    END
 WHERE id = ? AND state = ?;
 )sql";
     auto statement = prepare(connection, sql, RepositoryOperation::update_job);
@@ -327,33 +362,20 @@ WHERE id = ? AND state = ?;
         return result;
     }
 
-    const auto bind_optional_integer =
-        [connection, raw, operation](int position,
-                                     const std::optional<int>& value)
-        -> std::expected<void, RepositoryError> {
-        if (!value) {
-            const int result = sqlite3_bind_null(raw, position);
-
-            if (result != SQLITE_OK) {
-                return std::unexpected{error(connection, operation, result)};
-            }
-
-            return {};
-        }
-
-        return bind_integer(connection, raw, position, *value, operation);
-    };
-
     const auto exit_code =
         update.result ? update.result->exit_code : std::optional<int>{};
     const auto terminating_signal = update.result
                                         ? update.result->terminating_signal
                                         : std::optional<int>{};
 
-    if (auto result = bind_optional_integer(3, exit_code); !result) {
+    if (auto result = bind_optional_integer(connection, raw, 3, exit_code,
+                                            operation);
+        !result) {
         return result;
     }
-    if (auto result = bind_optional_integer(4, terminating_signal); !result) {
+    if (auto result = bind_optional_integer(connection, raw, 4,
+                                            terminating_signal, operation);
+        !result) {
         return result;
     }
     if (auto result = bind_integer(
@@ -362,13 +384,23 @@ WHERE id = ? AND state = ?;
         !result) {
         return result;
     }
+    const auto next_state = encode_state(update.state);
+
+    if (auto result = bind_text(connection, raw, 6, next_state, operation);
+        !result) {
+        return result;
+    }
+    if (auto result = bind_text(connection, raw, 7, next_state, operation);
+        !result) {
+        return result;
+    }
     if (auto result = bind_integer(
-            connection, raw, 6, static_cast<std::int64_t>(job.id), operation);
+            connection, raw, 8, static_cast<std::int64_t>(job.id), operation);
         !result) {
         return result;
     }
     if (auto result =
-            bind_text(connection, raw, 7, encode_state(job.state), operation);
+            bind_text(connection, raw, 9, encode_state(job.state), operation);
         !result) {
         return result;
     }
@@ -463,8 +495,9 @@ INSERT INTO jobs (
     inherit_environment,
     stdout_path,
     stderr_path,
-    append_output
-) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?);
+    append_output,
+    walltime_seconds
+) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?);
 )sql";
     auto statement = prepare(connection, sql, RepositoryOperation::insert_job);
 
@@ -532,6 +565,16 @@ INSERT INTO jobs (
     }
     if (auto result = bind_integer(connection, raw, 10,
                                    spec.append_output ? 1 : 0, operation);
+        !result) {
+        return result;
+    }
+    const auto walltime =
+        spec.walltime
+            ? std::optional<std::int64_t>{spec.walltime->count()}
+            : std::nullopt;
+
+    if (auto result =
+            bind_optional_integer(connection, raw, 11, walltime, operation);
         !result) {
         return result;
     }
@@ -750,6 +793,7 @@ std::expected<Job, RepositoryError> JobRepository::submit(const JobSpec& spec) {
         .state = JobState::pending,
         .assigned_node = std::nullopt,
         .result = std::nullopt,
+        .execution_time = std::nullopt,
     };
 }
 
@@ -776,7 +820,12 @@ SELECT
     assigned_node,
     exit_code,
     terminating_signal,
-    dumped_core
+    dumped_core,
+    walltime_seconds,
+    CASE
+        WHEN started_at IS NULL THEN NULL
+        ELSE MAX(0, COALESCE(finished_at, unixepoch()) - started_at)
+    END
 FROM jobs
 WHERE id = ?;
 )sql";
@@ -844,10 +893,20 @@ WHERE id = ?;
                                            std::move(value)};
                                    }),
                 .append_output = sqlite3_column_int(statement->get(), 11) != 0,
+                .walltime =
+                    optional_column_integer64(statement->get(), 16)
+                        .transform([](std::int64_t seconds) {
+                            return std::chrono::seconds{seconds};
+                        }),
             },
         .state = *state,
         .assigned_node = optional_column_text(statement->get(), 12),
         .result = std::nullopt,
+        .execution_time =
+            optional_column_integer64(statement->get(), 17)
+                .transform([](std::int64_t seconds) {
+                    return std::chrono::seconds{seconds};
+                }),
     };
 
     const auto exit_code = optional_column_integer(statement->get(), 13);

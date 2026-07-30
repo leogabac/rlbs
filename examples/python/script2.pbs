@@ -1,6 +1,6 @@
  #!/usr/bin/env bash
 #PBS -N hello-test
-#PBS -l walltime=00:01:00
+#PBS -l walltime=00:00:30
 #PBS -l select=1:ncpus=4:mem=2gb:ngpus=0
 #PBS -d /home/holo/projects/rlbs
 #PBS -V
@@ -10,4 +10,4 @@
 
 cd /home/holo/projects/rlbs/examples/python/
 
-python3 hello.py
+python3 -u sleep.py

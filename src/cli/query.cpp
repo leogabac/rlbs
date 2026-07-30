@@ -1,5 +1,7 @@
 #include <rlbs/cli/query.hpp>
 
+#include <rlbs/cli/duration.hpp>
+
 #include <charconv>
 #include <iomanip>
 #include <sstream>
@@ -265,6 +267,7 @@ std::string format_queue(const std::vector<JobSummary>& jobs) {
     output << std::left << std::setw(8) << "job id" << std::setw(12) << "state"
            << std::right << std::setw(6) << "cpus" << std::setw(12)
            << "memory mb" << std::setw(6) << "gpus" << "  " << std::left
+           << std::setw(12) << "time" << std::setw(12) << "walltime"
            << std::setw(16) << "node" << "name\n";
 
     for (const auto& job : jobs) {
@@ -272,6 +275,11 @@ std::string format_queue(const std::vector<JobSummary>& jobs) {
                << state_name(job.state) << std::right << std::setw(6)
                << job.resources.cpus << std::setw(12) << job.resources.memory_mb
                << std::setw(6) << job.resources.gpus << "  " << std::left
+               << std::setw(12)
+               << (job.execution_time ? format_duration(*job.execution_time)
+                                      : "-")
+               << std::setw(12)
+               << (job.walltime ? format_duration(*job.walltime) : "-")
                << std::setw(16) << job.assigned_node.value_or("-") << job.name
                << '\n';
     }
@@ -289,6 +297,14 @@ std::string format_status(const Job& job) {
            << "cpus: " << job.spec.resources.cpus << '\n'
            << "memory mb: " << job.spec.resources.memory_mb << '\n'
            << "gpus: " << job.spec.resources.gpus << '\n'
+           << "walltime: "
+           << (job.spec.walltime ? format_duration(*job.spec.walltime)
+                                 : "unlimited")
+           << '\n'
+           << "execution time: "
+           << (job.execution_time ? format_duration(*job.execution_time)
+                                  : "not started")
+           << '\n'
            << "working directory: " << job.spec.working_directory.string()
            << '\n'
            << "stdout: "

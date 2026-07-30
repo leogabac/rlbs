@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -56,6 +57,8 @@ struct JobSummary {
     JobState state{JobState::pending};
     ResourceRequest resources;
     std::optional<NodeId> assigned_node;
+    std::optional<std::chrono::seconds> walltime;
+    std::optional<std::chrono::seconds> execution_time;
 };
 
 struct QueueResponse {

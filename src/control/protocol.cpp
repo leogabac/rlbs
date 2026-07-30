@@ -9,7 +9,7 @@ namespace rlbs {
 namespace {
 
 constexpr std::uint32_t protocol_magic = 0x524c4253;
-constexpr std::uint16_t protocol_version = 1;
+constexpr std::uint16_t protocol_version = 2;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
@@ -299,6 +299,12 @@ encode_job_spec(Writer& writer, const JobSpec& spec) {
     }
 
     writer.integer8(spec.append_output ? 1 : 0);
+    writer.integer8(spec.walltime ? 1 : 0);
+
+    if (spec.walltime) {
+        writer.integer64(static_cast<std::uint64_t>(spec.walltime->count()));
+    }
+
     return {};
 }
 
@@ -407,6 +413,36 @@ decode_job_spec(Reader& reader) {
             error(ProtocolOperation::decode, "append flag is not boolean")};
     }
 
+    auto has_walltime = reader.integer8();
+
+    if (!has_walltime) {
+        return std::unexpected{std::move(has_walltime.error())};
+    }
+    if (*has_walltime > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "walltime flag is not boolean")};
+    }
+
+    std::optional<std::chrono::seconds> walltime;
+
+    if (*has_walltime != 0) {
+        auto seconds = reader.integer64();
+
+        if (!seconds) {
+            return std::unexpected{std::move(seconds.error())};
+        }
+        if (*seconds == 0 ||
+            *seconds >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+            return std::unexpected{
+                error(ProtocolOperation::decode, "walltime is out of range")};
+        }
+
+        walltime = std::chrono::seconds{
+            static_cast<std::chrono::seconds::rep>(*seconds)};
+    }
+
     return JobSpec{
         .name = std::move(*name),
         .resources =
@@ -422,6 +458,7 @@ decode_job_spec(Reader& reader) {
         .stdout_path = std::move(*stdout_path),
         .stderr_path = std::move(*stderr_path),
         .append_output = *append_output != 0,
+        .walltime = walltime,
     };
 }
 
@@ -532,6 +569,45 @@ decode_job_result(Reader& reader) {
     }};
 }
 
+void encode_optional_duration(
+    Writer& writer, const std::optional<std::chrono::seconds>& duration) {
+    writer.integer8(duration ? 1 : 0);
+
+    if (duration) {
+        writer.integer64(static_cast<std::uint64_t>(duration->count()));
+    }
+}
+
+[[nodiscard]] std::expected<std::optional<std::chrono::seconds>, ProtocolError>
+decode_optional_duration(Reader& reader) {
+    auto present = reader.integer8();
+
+    if (!present) {
+        return std::unexpected{std::move(present.error())};
+    }
+    if (*present > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "duration flag is not boolean")};
+    }
+    if (*present == 0) {
+        return std::optional<std::chrono::seconds>{};
+    }
+
+    auto seconds = reader.integer64();
+
+    if (!seconds) {
+        return std::unexpected{std::move(seconds.error())};
+    }
+    if (*seconds >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        return std::unexpected{
+            error(ProtocolOperation::decode, "duration is out of range")};
+    }
+
+    return std::optional<std::chrono::seconds>{std::chrono::seconds{
+        static_cast<std::chrono::seconds::rep>(*seconds)}};
+}
+
 [[nodiscard]] std::expected<void, ProtocolError>
 encode_job_summary(Writer& writer, const JobSummary& job) {
     writer.integer64(job.id);
@@ -544,7 +620,13 @@ encode_job_summary(Writer& writer, const JobSummary& job) {
     writer.integer32(job.resources.cpus);
     writer.integer64(job.resources.memory_mb);
     writer.integer32(job.resources.gpus);
-    return writer.optional_text(job.assigned_node);
+    if (auto written = writer.optional_text(job.assigned_node); !written) {
+        return written;
+    }
+
+    encode_optional_duration(writer, job.walltime);
+    encode_optional_duration(writer, job.execution_time);
+    return {};
 }
 
 [[nodiscard]] std::expected<JobSummary, ProtocolError>
@@ -556,6 +638,8 @@ decode_job_summary(Reader& reader) {
     auto memory_mb = reader.integer64();
     auto gpus = reader.integer32();
     auto assigned_node = reader.optional_text();
+    auto walltime = decode_optional_duration(reader);
+    auto execution_time = decode_optional_duration(reader);
 
     if (!id) {
         return std::unexpected{std::move(id.error())};
@@ -578,6 +662,12 @@ decode_job_summary(Reader& reader) {
     if (!assigned_node) {
         return std::unexpected{std::move(assigned_node.error())};
     }
+    if (!walltime) {
+        return std::unexpected{std::move(walltime.error())};
+    }
+    if (!execution_time) {
+        return std::unexpected{std::move(execution_time.error())};
+    }
 
     return JobSummary{
         .id = *id,
@@ -590,6 +680,8 @@ decode_job_summary(Reader& reader) {
                 .gpus = *gpus,
             },
         .assigned_node = std::move(*assigned_node),
+        .walltime = std::move(*walltime),
+        .execution_time = std::move(*execution_time),
     };
 }
 
@@ -609,6 +701,7 @@ decode_job_summary(Reader& reader) {
     }
 
     encode_job_result(writer, job.result);
+    encode_optional_duration(writer, job.execution_time);
     return {};
 }
 
@@ -619,6 +712,7 @@ decode_job_summary(Reader& reader) {
     auto state = decode_job_state(reader);
     auto assigned_node = reader.optional_text();
     auto result = decode_job_result(reader);
+    auto execution_time = decode_optional_duration(reader);
 
     if (!id) {
         return std::unexpected{std::move(id.error())};
@@ -638,6 +732,9 @@ decode_job_summary(Reader& reader) {
     if (!result) {
         return std::unexpected{std::move(result.error())};
     }
+    if (!execution_time) {
+        return std::unexpected{std::move(execution_time.error())};
+    }
 
     return Job{
         .id = *id,
@@ -646,6 +743,7 @@ decode_job_summary(Reader& reader) {
         .state = *state,
         .assigned_node = std::move(*assigned_node),
         .result = std::move(*result),
+        .execution_time = std::move(*execution_time),
     };
 }
 

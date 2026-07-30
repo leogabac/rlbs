@@ -87,6 +87,8 @@ void test_queue_format() {
             .state = rlbs::JobState::pending,
             .resources = {.cpus = 2, .memory_mb = 4096, .gpus = 0},
             .assigned_node = std::nullopt,
+            .walltime = std::chrono::seconds{300},
+            .execution_time = std::nullopt,
         },
         {
             .id = 8,
@@ -94,6 +96,8 @@ void test_queue_format() {
             .state = rlbs::JobState::running,
             .resources = {.cpus = 4, .memory_mb = 8192, .gpus = 1},
             .assigned_node = "head",
+            .walltime = std::chrono::seconds{600},
+            .execution_time = std::chrono::seconds{17},
         },
     };
     const auto output = rlbs::format_queue(jobs);
@@ -103,6 +107,8 @@ void test_queue_format() {
     expect(output.contains("8       running"), "queue prints running jobs");
     expect(output.contains("head"), "queue prints assigned nodes");
     expect(output.contains("running job"), "queue prints job names");
+    expect(output.contains("00:00:17"), "queue prints execution time");
+    expect(output.contains("00:10:00"), "queue prints walltime");
 }
 
 void test_status_format() {
@@ -120,6 +126,7 @@ void test_status_format() {
                 .stdout_path = "job.out",
                 .stderr_path = std::nullopt,
                 .append_output = true,
+                .walltime = std::chrono::seconds{90},
             },
         .state = rlbs::JobState::completed,
         .assigned_node = "head",
@@ -129,6 +136,7 @@ void test_status_format() {
                 .terminating_signal = std::nullopt,
                 .dumped_core = false,
             },
+        .execution_time = std::chrono::seconds{17},
     };
     const auto output = rlbs::format_status(job);
 
@@ -140,6 +148,10 @@ void test_status_format() {
     expect(output.contains("environment override: \"HELLO=world\""),
            "status prints stored environment overrides");
     expect(output.contains("exit code: 7"), "status prints the exit code");
+    expect(output.contains("walltime: 00:01:30"),
+           "status prints requested walltime");
+    expect(output.contains("execution time: 00:00:17"),
+           "status prints execution time");
     expect(output.contains("stderr: (daemon default)"),
            "status explains default output paths");
 }

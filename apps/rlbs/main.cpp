@@ -56,6 +56,7 @@ enum class CommandStyle {
     return R"usage(usage: qsub [--socket PATH] JOB.pbs
 
 the supported #PBS directives are -N, -l, -d, -V, -v, -o, and -e.
+walltime uses -l walltime=HH:MM:SS.
 )usage";
 }
 

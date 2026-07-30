@@ -36,6 +36,7 @@ void expect(bool condition, std::string_view message) {
         .stdout_path = "job output.txt",
         .stderr_path = std::nullopt,
         .append_output = true,
+        .walltime = std::chrono::seconds{90},
     };
 }
 
@@ -82,6 +83,8 @@ void test_submit_request_round_trip() {
            "request keeps absent stderr");
     expect(actual.append_output == expected.append_output,
            "request keeps append mode");
+    expect(actual.walltime == expected.walltime,
+           "request keeps walltime");
 }
 
 void test_query_requests_round_trip() {
@@ -166,6 +169,8 @@ void test_query_responses_round_trip() {
                     .state = rlbs::JobState::pending,
                     .resources = {.cpus = 2, .memory_mb = 1024, .gpus = 0},
                     .assigned_node = std::nullopt,
+                    .walltime = std::chrono::seconds{300},
+                    .execution_time = std::nullopt,
                 },
                 {
                     .id = 12,
@@ -173,6 +178,8 @@ void test_query_responses_round_trip() {
                     .state = rlbs::JobState::running,
                     .resources = {.cpus = 4, .memory_mb = 8192, .gpus = 1},
                     .assigned_node = "head",
+                    .walltime = std::chrono::seconds{600},
+                    .execution_time = std::chrono::seconds{17},
                 },
             },
     };
@@ -188,6 +195,7 @@ void test_query_responses_round_trip() {
                 .terminating_signal = std::nullopt,
                 .dumped_core = false,
             },
+        .execution_time = std::chrono::seconds{17},
     };
     const auto queue = rlbs::encode_response(expected_queue);
     const auto status =
@@ -224,6 +232,8 @@ void test_query_responses_round_trip() {
                        "queue response keeps job names");
                 expect(jobs[1].assigned_node == "head",
                        "queue response keeps assigned nodes");
+                expect(jobs[1].execution_time == std::chrono::seconds{17},
+                       "queue response keeps execution time");
             }
         }
     }
@@ -241,6 +251,8 @@ void test_query_responses_round_trip() {
                    "status response keeps state");
             expect(job.result && job.result->exit_code == 7,
                    "status response keeps process results");
+            expect(job.execution_time == expected_job.execution_time,
+                   "status response keeps execution time");
         }
     }
 

@@ -1,5 +1,7 @@
 #include <rlbs/cli/pbs_script.hpp>
 
+#include <rlbs/cli/duration.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -23,6 +25,7 @@ struct ParserState {
     bool saw_cpus{false};
     bool saw_memory{false};
     bool saw_gpus{false};
+    bool saw_walltime{false};
 };
 
 [[nodiscard]] std::string_view trim(std::string_view value) {
@@ -208,6 +211,23 @@ set_resource(ParserState& state, std::string_view name,
 
         state.spec.resources.gpus = *gpus;
         state.saw_gpus = true;
+        return {};
+    }
+
+    if (name == "walltime") {
+        if (state.saw_walltime) {
+            return std::unexpected{
+                "pbs walltime was specified more than once"};
+        }
+
+        auto walltime = parse_walltime(value);
+
+        if (!walltime) {
+            return std::unexpected{std::move(walltime.error())};
+        }
+
+        state.spec.walltime = *walltime;
+        state.saw_walltime = true;
         return {};
     }
 

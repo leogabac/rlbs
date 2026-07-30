@@ -80,6 +80,7 @@ local_spec(const std::filesystem::path& working_directory,
         .stdout_path = "job.out",
         .stderr_path = "job.err",
         .append_output = false,
+        .walltime = std::nullopt,
     };
 }
 
@@ -95,7 +96,7 @@ local_spec(const std::filesystem::path& working_directory,
 }
 
 [[nodiscard]] bool run_until_idle(rlbs::LocalCoordinator& coordinator) {
-    constexpr int attempts = 200;
+    constexpr int attempts = 800;
 
     for (int attempt = 0; attempt < attempts; ++attempt) {
         const auto ticked = coordinator.tick();
@@ -136,13 +137,16 @@ void test_queued_job_runs_to_completion() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     const auto first_tick = coordinator.tick();
     expect(first_tick.has_value(), "first coordinator tick succeeds");
     expect(coordinator.active_job_count() == 1, "scheduled job becomes active");
     expect(coordinator.local_node().available().cpus == 0,
            "running job holds its cpu allocation");
+    expect(!std::filesystem::exists(temporary.path() / "job.out"),
+           "final stdout stays absent until the job is staged");
     expect(run_until_idle(coordinator), "local job eventually finishes");
 
     const auto loaded = repository.find(submitted->id);
@@ -188,7 +192,8 @@ void test_job_waits_when_resources_do_not_fit() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "waiting tick succeeds");
     expect(coordinator.active_job_count() == 0,
@@ -222,7 +227,8 @@ void test_launch_failure_marks_job_failed() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(),
            "bad executable fails the job without breaking the tick");
@@ -266,7 +272,8 @@ void test_pending_job_can_be_cancelled() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     expect(coordinator.cancel(submitted->id).has_value(),
            "pending job cancellation succeeds");
@@ -303,7 +310,8 @@ void test_running_job_can_be_cancelled() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "cancellation job starts");
     expect(coordinator.active_job_count() == 1,
@@ -359,7 +367,8 @@ void test_pbs_runtime_environment() {
     }
 
     rlbs::FirstFitScheduler scheduler;
-    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "pbs runtime job starts");
     expect(run_until_idle(coordinator), "pbs runtime job finishes");
@@ -388,6 +397,51 @@ void test_pbs_runtime_environment() {
     }
 }
 
+void test_walltime_stops_running_job() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "walltime.db");
+
+    expect(database.has_value(), "walltime database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    auto spec = local_spec(
+        temporary.path(),
+        {"/bin/sh", "-c", "printf 'before timeout\\n'; sleep 30"});
+    spec.walltime = std::chrono::seconds{1};
+    const auto submitted = repository.submit(spec);
+
+    if (!submitted) {
+        expect(false, "walltime job submits");
+        return;
+    }
+
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::LocalCoordinator coordinator{
+        repository, local_node(), scheduler, temporary.path() / "spool"};
+
+    expect(coordinator.tick().has_value(), "walltime job starts");
+    expect(run_until_idle(coordinator), "walltime job is eventually stopped");
+
+    const auto loaded = repository.find(submitted->id);
+    expect(loaded && *loaded && (*loaded)->state == rlbs::JobState::failed,
+           "walltime expiry marks the job failed");
+    expect(loaded && *loaded && (*loaded)->result &&
+               (*loaded)->result->terminating_signal == SIGTERM,
+           "walltime expiry stores the terminating signal");
+    expect(loaded && *loaded && (*loaded)->execution_time &&
+               *(*loaded)->execution_time >= std::chrono::seconds{1},
+           "walltime job stores its execution time");
+    expect(read_file(temporary.path() / "job.out") == "before timeout\n",
+           "walltime staging preserves output written before termination");
+    expect(coordinator.local_node().available().cpus == 2,
+           "walltime job returns its cpu allocation");
+}
+
 } // namespace
 
 int main() {
@@ -397,6 +451,7 @@ int main() {
     test_pending_job_can_be_cancelled();
     test_running_job_can_be_cancelled();
     test_pbs_runtime_environment();
+    test_walltime_stops_running_job();
 
     if (failures == 0) {
         std::cout << "all local coordinator tests passed\n";

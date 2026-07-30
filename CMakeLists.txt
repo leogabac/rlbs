@@ -85,6 +85,7 @@ target_link_libraries(rlbs_control
 
 add_library(rlbs_local
     src/local/coordinator.cpp
+    src/local/output_spool.cpp
     src/local/runtime_environment.cpp
 )
 
@@ -123,6 +124,7 @@ target_link_libraries(rlbs_daemon
 )
 
 add_library(rlbs_cli
+    src/cli/duration.cpp
     src/cli/pbs_script.cpp
     src/cli/query.cpp
     src/cli/submit.cpp
@@ -292,6 +294,20 @@ if(BUILD_TESTING)
         COMMAND rlbs_local_tests
     )
 
+    add_executable(rlbs_output_spool_tests
+        tests/local/output_spool_test.cpp
+    )
+
+    target_link_libraries(rlbs_output_spool_tests
+        PRIVATE
+            rlbs_local
+    )
+
+    add_test(
+        NAME rlbs_output_spool_tests
+        COMMAND rlbs_output_spool_tests
+    )
+
     add_executable(rlbs_daemon_tests
         tests/daemon/daemon_test.cpp
     )
@@ -371,6 +387,7 @@ if(BUILD_TESTING)
     set_tests_properties(
         rlbs_execution_tests
         rlbs_local_tests
+        rlbs_output_spool_tests
         rlbs_daemon_tests
         PROPERTIES
             TIMEOUT 10

@@ -1,6 +1,5 @@
 #include <rlbs/local/coordinator.hpp>
 
-#include <algorithm>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -20,6 +19,7 @@ repository_failure(LocalCoordinatorOperation operation,
         .repository_error = std::move(repository_error),
         .process_error = std::nullopt,
         .runtime_environment_error = std::nullopt,
+        .output_spool_error = std::nullopt,
     };
 }
 
@@ -32,6 +32,7 @@ process_failure(LocalCoordinatorOperation operation,
         .repository_error = std::nullopt,
         .process_error = std::move(process_error),
         .runtime_environment_error = std::nullopt,
+        .output_spool_error = std::nullopt,
     };
 }
 
@@ -43,32 +44,37 @@ runtime_environment_failure(RuntimeEnvironmentError runtime_error) {
         .repository_error = std::nullopt,
         .process_error = std::nullopt,
         .runtime_environment_error = std::move(runtime_error),
+        .output_spool_error = std::nullopt,
     };
 }
 
-[[nodiscard]] std::filesystem::path default_output_path(const Job& job,
-                                                        char stream) {
-    std::string name = job.spec.name.empty() ? "job" : job.spec.name;
-
-    // socket clients do not get to smuggle directories into a default filename
-    // through the display name. explicit output paths still work as requested
-    std::ranges::replace(name, '/', '_');
-    return name + '.' + stream + std::to_string(job.id);
+[[nodiscard]] LocalCoordinatorError
+output_spool_failure(LocalCoordinatorOperation operation,
+                     OutputSpoolError spool_error) {
+    return {
+        .operation = operation,
+        .message = spool_error.message,
+        .repository_error = std::nullopt,
+        .process_error = std::nullopt,
+        .runtime_environment_error = std::nullopt,
+        .output_spool_error = std::move(spool_error),
+    };
 }
 
 [[nodiscard]] ProcessSpec
 process_spec(const Job& job,
-             const PreparedRuntimeEnvironment& runtime_environment) {
+             const PreparedRuntimeEnvironment& runtime_environment,
+             const PreparedOutputSpool& output_spool) {
     return {
         .argv = job.spec.argv,
         .working_directory = job.spec.working_directory,
         .environment = runtime_environment.variables(),
         .inherit_environment = job.spec.inherit_environment,
-        .stdout_path =
-            job.spec.stdout_path.value_or(default_output_path(job, 'o')),
-        .stderr_path =
-            job.spec.stderr_path.value_or(default_output_path(job, 'e')),
-        .append_output = job.spec.append_output,
+        .stdout_path = output_spool.stdout_path(),
+        .stderr_path = output_spool.stderr_path(),
+        // append applies when the spool is staged. each launch gets a fresh
+        // private file, so appending inside it would only preserve stale junk
+        .append_output = false,
     };
 }
 
@@ -107,8 +113,10 @@ process_spec(const Job& job,
 
 LocalCoordinator::LocalCoordinator(JobRepository& repository, Node local_node,
                                    const SchedulingPolicy& scheduler,
+                                   std::filesystem::path spool_directory,
                                    Logger* logger)
-    : repository_{repository}, scheduler_{scheduler}, logger_{logger} {
+    : repository_{repository}, scheduler_{scheduler}, logger_{logger},
+      spool_directory_{std::move(spool_directory)} {
     nodes_.push_back(std::move(local_node));
 }
 
@@ -148,6 +156,7 @@ LocalCoordinator::cancel(JobId job_id) {
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
             .runtime_environment_error = std::nullopt,
+            .output_spool_error = std::nullopt,
         }};
     }
     if (is_terminal((*stored)->state)) {
@@ -158,6 +167,7 @@ LocalCoordinator::cancel(JobId job_id) {
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
             .runtime_environment_error = std::nullopt,
+            .output_spool_error = std::nullopt,
         }};
     }
 
@@ -194,6 +204,7 @@ LocalCoordinator::cancel(JobId job_id) {
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
             .runtime_environment_error = std::nullopt,
+            .output_spool_error = std::nullopt,
         }};
     }
 
@@ -232,13 +243,38 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
         }
 
         if (!*result) {
+            const auto now = std::chrono::steady_clock::now();
+
+            // walltime measures actual execution, not time spent waiting in the
+            // queue. once it expires, use the same process-group shutdown path
+            // as cancel because inventing a second signal mess would be silly
+            if (!active->cancellation_requested && active->walltime &&
+                now - active->started_at >= *active->walltime) {
+                if (auto terminated = runner_.terminate(active->process);
+                    !terminated) {
+                    return std::unexpected{process_failure(
+                        LocalCoordinatorOperation::signal_cancellation,
+                        std::move(terminated.error()))};
+                }
+
+                active->cancellation_requested = true;
+                active->walltime_exceeded = true;
+                active->cancellation_requested_at = now;
+
+                if (logger_ != nullptr) {
+                    logger_->warning(
+                        "executor",
+                        "job " + std::to_string(active->job_id) +
+                            " exceeded walltime, sent sigterm");
+                }
+            }
+
             // sigterm is the polite request. after a short grace period, a job
             // ignoring it gets sigkill because "cancelled eventually maybe"
             // is not a particularly useful scheduler feature
             if (active->cancellation_requested &&
                 !active->cancellation_forced &&
-                std::chrono::steady_clock::now() -
-                        active->cancellation_requested_at >=
+                now - active->cancellation_requested_at >=
                     cancellation_grace_period) {
                 if (auto killed = runner_.force_kill(active->process);
                     !killed) {
@@ -260,17 +296,42 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
             continue;
         }
 
-        const auto final_state = active->cancellation_requested
-                                     ? JobState::cancelled
-                                     : JobState::completed;
+        // the process is gone, so both files are closed and stable now. stage
+        // before publishing the terminal state; qstat should not say "done"
+        // while its output is still stranded on an execution node
+        if (auto staged = active->output_spool.stage(); !staged) {
+            if (logger_ != nullptr) {
+                logger_->warning(
+                    "executor",
+                    "job " + std::to_string(active->job_id) +
+                        " output staging failed, spool kept at " +
+                        active->output_spool.directory().string() + ": " +
+                        staged.error().message);
+            }
+
+            // this is expected to be recoverable once remote nodes exist. keep
+            // the finished job, its allocation, and its spool around; the next
+            // tick will retry instead of killing rlbsd over a flaky transfer
+            ++active;
+            continue;
+        }
+
+        const auto final_state =
+            active->walltime_exceeded
+                ? JobState::failed
+                : active->cancellation_requested ? JobState::cancelled
+                                                 : JobState::completed;
         auto completed = repository_.transition(
             active->job_id, {
                                 .state = final_state,
                                 .assigned_node = std::nullopt,
                                 .result = **result,
-                                .detail = active->cancellation_requested
-                                              ? "local process cancelled"
-                                              : "local process exited",
+                                .detail =
+                                    active->walltime_exceeded
+                                        ? "walltime exceeded"
+                                    : active->cancellation_requested
+                                        ? "local process cancelled"
+                                        : "local process exited",
                             });
 
         if (!completed) {
@@ -284,8 +345,10 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
         if (logger_ != nullptr) {
             std::ostringstream message;
             message << "job " << active->job_id << ' '
-                    << (active->cancellation_requested ? "cancelled"
-                                                       : "completed");
+                    << (active->walltime_exceeded
+                            ? "failed walltime_exceeded"
+                        : active->cancellation_requested ? "cancelled"
+                                                         : "completed");
 
             if ((*result)->exit_code) {
                 message << " exit_code=" << *(*result)->exit_code;
@@ -410,9 +473,44 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
             std::move(runtime_environment.error()))};
     }
 
-    auto launched = runner_.launch(process_spec(job, *runtime_environment));
+    auto output_spool = PreparedOutputSpool::create(spool_directory_, job);
+
+    if (!output_spool) {
+        const auto spool_message = output_spool.error().message;
+        auto failed = repository_.transition(
+            job.id,
+            {
+                .state = JobState::failed,
+                .assigned_node = std::nullopt,
+                .result = std::nullopt,
+                .detail = "could not prepare output spool: " + spool_message,
+            });
+        static_cast<void>(release(assignment.allocation));
+
+        if (!failed) {
+            return std::unexpected{repository_failure(
+                LocalCoordinatorOperation::prepare_output_spool,
+                std::move(failed.error()))};
+        }
+
+        if (logger_ != nullptr) {
+            logger_->warning("executor",
+                             "job " + std::to_string(job.id) +
+                                 " spool setup failed: " + spool_message);
+        }
+
+        return std::unexpected{output_spool_failure(
+            LocalCoordinatorOperation::prepare_output_spool,
+            std::move(output_spool.error()))};
+    }
+
+    auto launched =
+        runner_.launch(process_spec(job, *runtime_environment, *output_spool));
 
     if (!launched) {
+        // open/exec failures can still leave useful stderr in the spool. stage
+        // it through the normal path instead of making launch errors special
+        auto staged = output_spool->stage();
         auto failed = repository_.transition(
             job.id, {
                         .state = JobState::failed,
@@ -430,6 +528,11 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
 
         if (!released) {
             return released;
+        }
+        if (!staged) {
+            return std::unexpected{output_spool_failure(
+                LocalCoordinatorOperation::stage_output,
+                std::move(staged.error()))};
         }
 
         if (logger_ != nullptr) {
@@ -456,6 +559,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         // database. kill the whole group now instead of making an orphan
         static_cast<void>(runner_.force_kill(*launched));
         static_cast<void>(runner_.wait(*launched));
+        auto staged = output_spool->stage();
         static_cast<void>(repository_.transition(
             job.id, {
                         .state = JobState::failed,
@@ -464,6 +568,13 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
                         .detail = "could not store the running state",
                     }));
         static_cast<void>(release(assignment.allocation));
+
+        if (!staged) {
+            return std::unexpected{output_spool_failure(
+                LocalCoordinatorOperation::stage_output,
+                std::move(staged.error()))};
+        }
+
         return std::unexpected{
             repository_failure(LocalCoordinatorOperation::persist_running,
                                std::move(running.error()))};
@@ -480,8 +591,12 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         .allocation = std::move(assignment.allocation),
         .process = std::move(*launched),
         .runtime_environment = std::move(*runtime_environment),
+        .output_spool = std::move(*output_spool),
+        .walltime = job.spec.walltime,
+        .started_at = std::chrono::steady_clock::now(),
         .cancellation_requested = false,
         .cancellation_forced = false,
+        .walltime_exceeded = false,
         .cancellation_requested_at = {},
     });
     return {};
@@ -499,6 +614,7 @@ LocalCoordinator::release(const ResourceAllocation& allocation) {
         .repository_error = std::nullopt,
         .process_error = std::nullopt,
         .runtime_environment_error = std::nullopt,
+        .output_spool_error = std::nullopt,
     }};
 }
 

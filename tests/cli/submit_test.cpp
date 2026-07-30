@@ -40,7 +40,7 @@ void test_minimal_submit() {
 }
 
 void test_full_submit() {
-    const std::array<std::string_view, 24> arguments{
+    const std::array<std::string_view, 26> arguments{
         "--socket",
         "/tmp/custom.sock",
         "--name",
@@ -51,6 +51,8 @@ void test_full_submit() {
         "8192",
         "--gpus",
         "1",
+        "--walltime",
+        "01:02:03",
         "--cwd",
         "/tmp",
         "--env",
@@ -78,6 +80,8 @@ void test_full_submit() {
         expect(command->spec.resources.memory_mb == 8192,
                "full submit keeps memory");
         expect(command->spec.resources.gpus == 1, "full submit keeps gpus");
+        expect(command->spec.walltime == std::chrono::seconds{3723},
+               "full submit parses walltime");
         expect(command->spec.working_directory == "/tmp",
                "full submit resolves cwd");
         expect(command->spec.environment.size() == 2,
@@ -111,6 +115,11 @@ void test_bad_submissions() {
                                                             "argument"};
     expect(!rlbs::parse_submit_command(missing_delimiter),
            "missing command delimiter is rejected");
+
+    const std::array<std::string_view, 4> bad_walltime{
+        "--walltime", "01:99:00", "--", "/bin/true"};
+    expect(!rlbs::parse_submit_command(bad_walltime),
+           "invalid walltime is rejected");
 }
 
 } // namespace

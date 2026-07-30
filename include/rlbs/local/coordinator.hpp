@@ -11,6 +11,7 @@
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 #include <rlbs/execution/process_runner.hpp>
+#include <rlbs/local/output_spool.hpp>
 #include <rlbs/local/runtime_environment.hpp>
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
@@ -22,6 +23,7 @@ enum class LocalCoordinatorOperation {
     persist_assignment,
     persist_starting,
     prepare_runtime_environment,
+    prepare_output_spool,
     launch_process,
     persist_running,
     poll_process,
@@ -29,6 +31,7 @@ enum class LocalCoordinatorOperation {
     signal_cancellation,
     persist_cancelled,
     persist_finished,
+    stage_output,
     release_resources,
 };
 
@@ -39,6 +42,7 @@ struct LocalCoordinatorError {
     std::optional<RepositoryError> repository_error;
     std::optional<ProcessError> process_error;
     std::optional<RuntimeEnvironmentError> runtime_environment_error;
+    std::optional<OutputSpoolError> output_spool_error;
 };
 
 // this is the small bit gluing queue policy to local process execution. rlbsd
@@ -47,6 +51,7 @@ class LocalCoordinator {
   public:
     LocalCoordinator(JobRepository& repository, Node local_node,
                      const SchedulingPolicy& scheduler,
+                     std::filesystem::path spool_directory,
                      Logger* logger = nullptr);
 
     [[nodiscard]] std::expected<void, LocalCoordinatorError>
@@ -64,8 +69,12 @@ class LocalCoordinator {
         ResourceAllocation allocation;
         ProcessHandle process;
         PreparedRuntimeEnvironment runtime_environment;
+        PreparedOutputSpool output_spool;
+        std::optional<std::chrono::seconds> walltime;
+        std::chrono::steady_clock::time_point started_at;
         bool cancellation_requested{false};
         bool cancellation_forced{false};
+        bool walltime_exceeded{false};
         std::chrono::steady_clock::time_point cancellation_requested_at{};
     };
 
@@ -78,6 +87,7 @@ class LocalCoordinator {
     const SchedulingPolicy& scheduler_;
     LocalProcessRunner runner_;
     Logger* logger_{nullptr};
+    std::filesystem::path spool_directory_;
     std::vector<Node> nodes_;
     std::list<ActiveJob> active_jobs_;
 };

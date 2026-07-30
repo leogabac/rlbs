@@ -70,6 +70,7 @@ class TemporaryDirectory {
         .stdout_path = "job.out",
         .stderr_path = std::nullopt,
         .append_output = true,
+        .walltime = std::chrono::seconds{90},
     };
 }
 
@@ -108,6 +109,8 @@ void expect_same_spec(const rlbs::JobSpec& actual,
            "stderr path survives persistence");
     expect(actual.append_output == expected.append_output,
            "output mode survives persistence");
+    expect(actual.walltime == expected.walltime,
+           "walltime survives persistence");
 }
 
 void test_submit_find_and_reopen() {
@@ -348,6 +351,8 @@ void test_transitions_store_results_and_events() {
                "assigned node survives later transitions");
         expect((*loaded)->result && (*loaded)->result->exit_code == 7,
                "process result survives persistence");
+        expect((*loaded)->execution_time.has_value(),
+               "execution time is available after the job ran");
     }
 
     const auto events = repository.events(submitted->id);

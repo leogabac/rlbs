@@ -59,6 +59,8 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
             config.database_path = *value;
         } else if (option == "--socket") {
             config.socket_path = *value;
+        } else if (option == "--spool") {
+            config.spool_path = *value;
         } else if (option == "--node-id") {
             config.node_id = *value;
         } else if (option == "--cpus") {
@@ -124,6 +126,13 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
     if (config.socket_path.empty()) {
         return std::unexpected{"--socket cannot be empty"};
     }
+    if (config.spool_path.empty()) {
+        auto database_parent = config.database_path.parent_path();
+        config.spool_path =
+            (database_parent.empty() ? std::filesystem::path{"."}
+                                     : database_parent) /
+            "rlbs-spool";
+    }
     if (config.node_id.empty()) {
         return std::unexpected{"--node-id cannot be empty"};
     }
@@ -144,6 +153,7 @@ std::string_view daemon_usage() {
 options:
   --database PATH           sqlite database path (default: rlbs.db)
   --socket PATH             unix control socket (default: /tmp/rlbs.sock)
+  --spool PATH              execution output spool (default: beside database)
   --node-id ID              local node name (default: local)
   --cpus N                  total local cpu capacity (default: 1)
   --memory-mb N             total local memory in mb (default: 0)

@@ -235,6 +235,8 @@ receive_frame(int socket) {
                 .state = job.state,
                 .resources = job.spec.resources,
                 .assigned_node = job.assigned_node,
+                .walltime = job.spec.walltime,
+                .execution_time = job.execution_time,
             });
         }
 
