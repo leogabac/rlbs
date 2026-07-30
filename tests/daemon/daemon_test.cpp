@@ -505,6 +505,52 @@ void test_real_cli_submits_to_daemon(
     expect(qstat_status.output.contains("execution time:"),
            "qstat status prints execution time");
 
+    const auto native_script = temporary.path() / "integration.rlbs";
+    {
+        std::ofstream script{native_script};
+        script << "#!/usr/bin/env bash\n"
+               << "#RLBS version = 1\n"
+               << "#RLBS name = \"native-script\"\n"
+               << "#RLBS resources.cpus = 1\n"
+               << "#RLBS resources.memory_mb = 64\n"
+               << "#RLBS working_directory = \"" << temporary.path().string()
+               << "\"\n"
+               << "#RLBS inherit_environment = false\n"
+               << "#RLBS environment.NATIVE_MESSAGE = \"hello native\"\n"
+               << "#RLBS output.stdout = \"native-script.out\"\n"
+               << "#RLBS output.stderr = \"native-script.err\"\n"
+               << "printf '%s\\n' \"$NATIVE_MESSAGE\"\n";
+    }
+
+    const auto native_submitted = run_cli_command(
+        cli_executable,
+        {"submit", "--socket", socket_path.string(), native_script.string()});
+    expect(native_submitted.exit_code == 0,
+           "real rlbs submits a native script");
+    expect(native_submitted.output == "submitted job 4\n",
+           "native script receives the next job id");
+
+    bool native_completed = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const auto loaded = repository.find(4);
+
+        if (loaded && *loaded &&
+            (*loaded)->state == rlbs::JobState::completed) {
+            native_completed = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(native_completed, "real daemon completes the native script");
+    expect(read_file(temporary.path() / "native-script.out") ==
+               "hello native\n",
+           "native directives and bash body run together");
+    expect(std::filesystem::exists(temporary.path() / "native-script.err"),
+           "native script stages its configured stderr");
+
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }
 

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#RLBS version = 1
+#RLBS name = "native-hello"
+#RLBS walltime = "00:01:00"
+#RLBS resources.cpus = 1
+#RLBS resources.memory_mb = 128
+#RLBS resources.gpus = 0
+#RLBS inherit_environment = true
+#RLBS environment.RUN_MODE = "example"
+#RLBS output.stdout = "native-hello.out"
+#RLBS output.stderr = "native-hello.err"
+#RLBS output.append = false
+
+# keep the example runnable from anywhere, because cwd surprises get old fast
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+printf 'run mode: %s\n' "${RUN_MODE:-unset}"
+python3 -u "$script_directory/hello.py"

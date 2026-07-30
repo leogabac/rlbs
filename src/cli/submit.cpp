@@ -1,6 +1,7 @@
 #include <rlbs/cli/submit.hpp>
 
 #include <rlbs/cli/duration.hpp>
+#include <rlbs/cli/native_script.hpp>
 #include <rlbs/cli/pbs_script.hpp>
 
 #include <algorithm>
@@ -136,11 +137,12 @@ parse_submit_command(std::span<const std::string_view> arguments) {
         if (!option.starts_with('-')) {
             if (index + 1 != arguments.size()) {
                 return std::unexpected{
-                    "pbs script must be the final submit argument"};
+                    "job script must be the final submit argument"};
             }
             if (used_native_job_option) {
                 return std::unexpected{
-                    "native job options cannot be mixed with a pbs script yet"};
+                    "command-line job options cannot be mixed with a job "
+                    "script yet"};
             }
 
             auto submission_directory = resolve_working_directory(std::nullopt);
@@ -149,9 +151,12 @@ parse_submit_command(std::span<const std::string_view> arguments) {
                 return std::unexpected{std::move(submission_directory.error())};
             }
 
+            const std::filesystem::path script_path{option};
             auto parsed =
-                parse_pbs_script(std::filesystem::path{option},
-                                 *submission_directory, current_environment());
+                is_native_script_path(script_path)
+                    ? parse_native_script(script_path, *submission_directory)
+                    : parse_pbs_script(script_path, *submission_directory,
+                                       current_environment());
 
             if (!parsed) {
                 return std::unexpected{std::move(parsed.error())};
@@ -266,7 +271,7 @@ parse_submit_command(std::span<const std::string_view> arguments) {
     }
     if (!found_command || command.spec.argv.empty()) {
         return std::unexpected{
-            "submit needs a pbs script or -- followed by a command"};
+            "submit needs a job script or -- followed by a command"};
     }
     if (command.socket_path.empty()) {
         return std::unexpected{"--socket cannot be empty"};
@@ -303,6 +308,7 @@ parse_submit_command(std::span<const std::string_view> arguments) {
 std::string_view submit_usage() {
     return R"usage(usage: rlbs submit [options] -- command [arguments...]
        rlbs submit [--socket PATH] JOB.pbs
+       rlbs submit [--socket PATH] JOB.rlbs
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)
@@ -322,6 +328,9 @@ options:
 
 basic #PBS options:
   -N, -l, -d, -V, -v, -o, and -e
+
+native scripts:
+  .rlbs and .rlbs.sh files use #RLBS key = value directives
 )usage";
 }
 
