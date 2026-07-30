@@ -11,6 +11,7 @@
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 #include <rlbs/execution/process_runner.hpp>
+#include <rlbs/local/runtime_environment.hpp>
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
 
@@ -20,6 +21,7 @@ enum class LocalCoordinatorOperation {
     load_pending,
     persist_assignment,
     persist_starting,
+    prepare_runtime_environment,
     launch_process,
     persist_running,
     poll_process,
@@ -36,6 +38,7 @@ struct LocalCoordinatorError {
     std::string message;
     std::optional<RepositoryError> repository_error;
     std::optional<ProcessError> process_error;
+    std::optional<RuntimeEnvironmentError> runtime_environment_error;
 };
 
 // this is the small bit gluing queue policy to local process execution. rlbsd
@@ -60,6 +63,7 @@ class LocalCoordinator {
         JobId job_id;
         ResourceAllocation allocation;
         ProcessHandle process;
+        PreparedRuntimeEnvironment runtime_environment;
         bool cancellation_requested{false};
         bool cancellation_forced{false};
         std::chrono::steady_clock::time_point cancellation_requested_at{};

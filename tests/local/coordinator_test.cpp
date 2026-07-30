@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -324,6 +325,69 @@ void test_running_job_can_be_cancelled() {
            "cancelled job returns its cpu allocation");
 }
 
+void test_pbs_runtime_environment() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "pbs-runtime.db");
+
+    expect(database.has_value(), "pbs runtime database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    auto spec = local_spec(
+        temporary.path(),
+        {"/bin/sh", "-c",
+         "printf '%s\\n' \"$PBS_JOBID\" \"$PBS_JOBNAME\" \"$PBS_O_WORKDIR\" "
+         "\"$PBS_NODEFILE\"; cat \"$PBS_NODEFILE\""});
+    spec.name = "pbs runtime";
+    spec.inherit_environment = false;
+    spec.stdout_path = "pbs-runtime.out";
+    spec.environment = {
+        {.name = "PBS_JOBID", .value = "fake-id"},
+        {.name = "PBS_JOBNAME", .value = "fake-name"},
+        {.name = "PBS_O_WORKDIR", .value = "/fake/work"},
+        {.name = "PBS_NODEFILE", .value = "/fake/nodes"},
+    };
+    const auto submitted = repository.submit(spec);
+
+    if (!submitted) {
+        expect(false, "pbs runtime job submits");
+        return;
+    }
+
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::LocalCoordinator coordinator{repository, local_node(), scheduler};
+
+    expect(coordinator.tick().has_value(), "pbs runtime job starts");
+    expect(run_until_idle(coordinator), "pbs runtime job finishes");
+
+    std::istringstream output{read_file(temporary.path() / "pbs-runtime.out")};
+    std::vector<std::string> lines;
+    std::string line;
+
+    while (std::getline(output, line)) {
+        lines.push_back(std::move(line));
+    }
+
+    expect(lines.size() == 6, "pbs runtime output has every expected line");
+
+    if (lines.size() == 6) {
+        expect(lines[0] == std::to_string(submitted->id),
+               "pbs job id comes from the scheduler");
+        expect(lines[1] == "pbs runtime",
+               "pbs job name comes from the scheduler");
+        expect(lines[2] == temporary.path().string(),
+               "pbs original work directory is the submitted directory");
+        expect(lines[4] == "local" && lines[5] == "local",
+               "pbs node file repeats the node once per requested cpu");
+        expect(!std::filesystem::exists(lines[3]),
+               "pbs node file is removed after the job exits");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -332,6 +396,7 @@ int main() {
     test_launch_failure_marks_job_failed();
     test_pending_job_can_be_cancelled();
     test_running_job_can_be_cancelled();
+    test_pbs_runtime_environment();
 
     if (failures == 0) {
         std::cout << "all local coordinator tests passed\n";

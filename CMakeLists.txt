@@ -85,6 +85,7 @@ target_link_libraries(rlbs_control
 
 add_library(rlbs_local
     src/local/coordinator.cpp
+    src/local/runtime_environment.cpp
 )
 
 target_include_directories(rlbs_local

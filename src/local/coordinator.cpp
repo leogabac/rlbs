@@ -19,6 +19,7 @@ repository_failure(LocalCoordinatorOperation operation,
         .message = repository_error.message,
         .repository_error = std::move(repository_error),
         .process_error = std::nullopt,
+        .runtime_environment_error = std::nullopt,
     };
 }
 
@@ -30,6 +31,18 @@ process_failure(LocalCoordinatorOperation operation,
         .message = process_error.context,
         .repository_error = std::nullopt,
         .process_error = std::move(process_error),
+        .runtime_environment_error = std::nullopt,
+    };
+}
+
+[[nodiscard]] LocalCoordinatorError
+runtime_environment_failure(RuntimeEnvironmentError runtime_error) {
+    return {
+        .operation = LocalCoordinatorOperation::prepare_runtime_environment,
+        .message = runtime_error.message,
+        .repository_error = std::nullopt,
+        .process_error = std::nullopt,
+        .runtime_environment_error = std::move(runtime_error),
     };
 }
 
@@ -43,11 +56,13 @@ process_failure(LocalCoordinatorOperation operation,
     return name + '.' + stream + std::to_string(job.id);
 }
 
-[[nodiscard]] ProcessSpec process_spec(const Job& job) {
+[[nodiscard]] ProcessSpec
+process_spec(const Job& job,
+             const PreparedRuntimeEnvironment& runtime_environment) {
     return {
         .argv = job.spec.argv,
         .working_directory = job.spec.working_directory,
-        .environment = job.spec.environment,
+        .environment = runtime_environment.variables(),
         .inherit_environment = job.spec.inherit_environment,
         .stdout_path =
             job.spec.stdout_path.value_or(default_output_path(job, 'o')),
@@ -132,6 +147,7 @@ LocalCoordinator::cancel(JobId job_id) {
             .message = "job " + std::to_string(job_id) + " was not found",
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
+            .runtime_environment_error = std::nullopt,
         }};
     }
     if (is_terminal((*stored)->state)) {
@@ -141,6 +157,7 @@ LocalCoordinator::cancel(JobId job_id) {
                        std::string{terminal_state_name((*stored)->state)},
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
+            .runtime_environment_error = std::nullopt,
         }};
     }
 
@@ -176,6 +193,7 @@ LocalCoordinator::cancel(JobId job_id) {
                        " is not active on the local node",
             .repository_error = std::nullopt,
             .process_error = std::nullopt,
+            .runtime_environment_error = std::nullopt,
         }};
     }
 
@@ -361,7 +379,38 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
                                std::move(starting.error()))};
     }
 
-    auto launched = runner_.launch(process_spec(job));
+    auto runtime_environment =
+        PreparedRuntimeEnvironment::create(job, assignment.node_id);
+
+    if (!runtime_environment) {
+        const auto runtime_message = runtime_environment.error().message;
+        auto failed = repository_.transition(
+            job.id,
+            {
+                .state = JobState::failed,
+                .assigned_node = std::nullopt,
+                .result = std::nullopt,
+                .detail = "could not prepare pbs runtime: " + runtime_message,
+            });
+        static_cast<void>(release(assignment.allocation));
+
+        if (!failed) {
+            return std::unexpected{repository_failure(
+                LocalCoordinatorOperation::prepare_runtime_environment,
+                std::move(failed.error()))};
+        }
+
+        if (logger_ != nullptr) {
+            logger_->warning("executor",
+                             "job " + std::to_string(job.id) +
+                                 " runtime setup failed: " + runtime_message);
+        }
+
+        return std::unexpected{runtime_environment_failure(
+            std::move(runtime_environment.error()))};
+    }
+
+    auto launched = runner_.launch(process_spec(job, *runtime_environment));
 
     if (!launched) {
         auto failed = repository_.transition(
@@ -430,6 +479,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         .job_id = job.id,
         .allocation = std::move(assignment.allocation),
         .process = std::move(*launched),
+        .runtime_environment = std::move(*runtime_environment),
         .cancellation_requested = false,
         .cancellation_forced = false,
         .cancellation_requested_at = {},
@@ -448,6 +498,7 @@ LocalCoordinator::release(const ResourceAllocation& allocation) {
         .message = "local resource accounting rejected a release",
         .repository_error = std::nullopt,
         .process_error = std::nullopt,
+        .runtime_environment_error = std::nullopt,
     }};
 }
 
