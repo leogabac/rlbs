@@ -9,6 +9,7 @@ struct sqlite3;
 namespace rlbs {
 
 class JobRepository;
+class QueueRepository;
 
 enum class DatabaseOperation {
     open,
@@ -42,6 +43,7 @@ class SqliteDatabase {
 
   private:
     friend class JobRepository;
+    friend class QueueRepository;
 
     explicit SqliteDatabase(sqlite3* connection);
 

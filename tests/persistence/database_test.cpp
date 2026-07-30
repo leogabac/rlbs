@@ -98,8 +98,8 @@ void test_initializes_and_reopens_database() {
         const auto version = database->schema_version();
         const auto foreign_keys = database->foreign_keys_enabled();
 
-        expect(version && *version == 2,
-               "a new database uses schema version 2");
+        expect(version && *version == 3,
+               "a new database uses schema version 3");
         expect(foreign_keys && *foreign_keys,
                "foreign keys are enabled on the rlbs connection");
     }
@@ -112,13 +112,14 @@ void test_initializes_and_reopens_database() {
            "schema creates the environment table");
     expect(table_names.contains("job_events"),
            "schema creates the event table");
+    expect(table_names.contains("queues"), "schema creates the queues table");
 
     auto reopened = rlbs::SqliteDatabase::open(path);
     expect(reopened.has_value(), "an existing database reopens");
 
     if (reopened) {
         const auto version = reopened->schema_version();
-        expect(version && *version == 2,
+        expect(version && *version == 3,
                "reopening does not rerun or change the schema");
     }
 }
@@ -135,7 +136,7 @@ void test_rejects_newer_schema() {
         return;
     }
 
-    expect(sqlite3_exec(connection, "PRAGMA user_version = 3;", nullptr,
+    expect(sqlite3_exec(connection, "PRAGMA user_version = 4;", nullptr,
                         nullptr, nullptr) == SQLITE_OK,
            "future database fixture sets its version");
     static_cast<void>(sqlite3_close(connection));
@@ -147,11 +148,43 @@ void test_rejects_newer_schema() {
            "newer schema failure identifies migration");
 }
 
+void test_upgrades_version_two_database() {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path() / "version-two.db";
+    sqlite3* connection = nullptr;
+
+    expect(sqlite3_open(path.c_str(), &connection) == SQLITE_OK,
+           "version two fixture opens");
+
+    if (connection == nullptr) {
+        return;
+    }
+
+    expect(sqlite3_exec(connection, "PRAGMA user_version = 2;", nullptr,
+                        nullptr, nullptr) == SQLITE_OK,
+           "version two fixture sets its version");
+    static_cast<void>(sqlite3_close(connection));
+
+    const auto database = rlbs::SqliteDatabase::open(path);
+    expect(database.has_value(), "version two database upgrades");
+
+    if (database) {
+        const auto version = database->schema_version();
+        expect(version && *version == 3,
+               "version two database reaches schema version 3");
+    }
+
+    const auto table_names = read_table_names(path);
+    expect(table_names.contains("queues"),
+           "version two migration creates the queues table");
+}
+
 } // namespace
 
 int main() {
     test_initializes_and_reopens_database();
     test_rejects_newer_schema();
+    test_upgrades_version_two_database();
 
     if (failures == 0) {
         std::cout << "all persistence tests passed\n";

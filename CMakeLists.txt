@@ -54,6 +54,7 @@ target_include_directories(rlbs_execution
 add_library(rlbs_persistence
     src/persistence/database.cpp
     src/persistence/job_repository.cpp
+    src/persistence/queue_repository.cpp
 )
 
 target_include_directories(rlbs_persistence
@@ -279,6 +280,21 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_job_repository_tests
         COMMAND rlbs_job_repository_tests
+    )
+
+    add_executable(rlbs_queue_repository_tests
+        tests/persistence/queue_repository_test.cpp
+    )
+
+    target_link_libraries(rlbs_queue_repository_tests
+        PRIVATE
+            rlbs_persistence
+            SQLite3::SQLite3
+    )
+
+    add_test(
+        NAME rlbs_queue_repository_tests
+        COMMAND rlbs_queue_repository_tests
     )
 
     add_executable(rlbs_local_tests
