@@ -433,6 +433,48 @@ void test_real_cli_submits_to_daemon(
     expect(cancellation_stored,
            "real daemon persists running-job cancellation");
 
+    const auto pbs_script = temporary.path() / "integration.pbs";
+    {
+        std::ofstream script{pbs_script};
+        script << "#!/bin/sh\n"
+               << "#PBS -N pbs-script\n"
+               << "#PBS -l ncpus=1,mem=64mb\n"
+               << "#PBS -d " << temporary.path().string() << "\n"
+               << "#PBS -o pbs-script.out\n"
+               << "#PBS -e pbs-script.err\n"
+               << "printf '%s|%s|%s\\n' \"$PBS_JOBID\" \"$PBS_JOBNAME\" "
+                  "\"$PBS_O_WORKDIR\"\n"
+               << "printf 'node='; cat \"$PBS_NODEFILE\"\n";
+    }
+
+    const auto pbs_submitted = run_cli_command(
+        cli_executable,
+        {"submit", "--socket", socket_path.string(), pbs_script.string()});
+    expect(pbs_submitted.exit_code == 0, "real rlbs submits a pbs script");
+    expect(pbs_submitted.output == "submitted job 3\n",
+           "pbs script receives the next job id");
+
+    bool pbs_completed = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        const auto loaded = repository.find(3);
+
+        if (loaded && *loaded &&
+            (*loaded)->state == rlbs::JobState::completed) {
+            pbs_completed = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(pbs_completed, "real daemon completes the pbs script");
+    expect(read_file(temporary.path() / "pbs-script.out") ==
+               "3|pbs-script|" + temporary.path().string() + "\nnode=local\n",
+           "pbs script receives directives and runtime variables");
+    expect(std::filesystem::exists(temporary.path() / "pbs-script.err"),
+           "pbs script creates its configured stderr file");
+
     expect(daemon.stop(), "rlbsd exits cleanly on sigterm");
 }
 

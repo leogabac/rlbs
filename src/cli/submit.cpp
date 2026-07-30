@@ -9,6 +9,10 @@
 #include <utility>
 #include <vector>
 
+#include <rlbs/cli/pbs_script.hpp>
+
+extern char** environ;
+
 namespace rlbs {
 namespace {
 
@@ -81,6 +85,27 @@ resolve_working_directory(
     return name.empty() ? std::string{"job"} : name;
 }
 
+[[nodiscard]] std::vector<EnvironmentVariable> current_environment() {
+    std::vector<EnvironmentVariable> environment;
+
+    // -V means the submit client's environment, not whatever rlbsd inherited
+    // when somebody started it three hours ago in a different terminal
+    for (char** entry = environ; entry != nullptr && *entry != nullptr;
+         ++entry) {
+        const std::string_view value{*entry};
+        const auto separator = value.find('=');
+
+        if (separator != std::string_view::npos && separator != 0) {
+            environment.push_back({
+                .name = std::string{value.substr(0, separator)},
+                .value = std::string{value.substr(separator + 1)},
+            });
+        }
+    }
+
+    return environment;
+}
+
 } // namespace
 
 std::expected<SubmitCommand, std::string>
@@ -88,6 +113,8 @@ parse_submit_command(std::span<const std::string_view> arguments) {
     SubmitCommand command;
     std::optional<std::filesystem::path> requested_directory;
     bool found_command = false;
+    bool found_script = false;
+    bool used_native_job_option = false;
 
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto option = arguments[index];
@@ -105,19 +132,52 @@ parse_submit_command(std::span<const std::string_view> arguments) {
             break;
         }
 
+        if (!option.starts_with('-')) {
+            if (index + 1 != arguments.size()) {
+                return std::unexpected{
+                    "pbs script must be the final submit argument"};
+            }
+            if (used_native_job_option) {
+                return std::unexpected{
+                    "native job options cannot be mixed with a pbs script yet"};
+            }
+
+            auto submission_directory = resolve_working_directory(std::nullopt);
+
+            if (!submission_directory) {
+                return std::unexpected{std::move(submission_directory.error())};
+            }
+
+            auto parsed =
+                parse_pbs_script(std::filesystem::path{option},
+                                 *submission_directory, current_environment());
+
+            if (!parsed) {
+                return std::unexpected{std::move(parsed.error())};
+            }
+
+            command.spec = std::move(*parsed);
+            found_command = true;
+            found_script = true;
+            break;
+        }
+
         if (option == "--help" || option == "-h") {
             command.show_help = true;
             continue;
         }
         if (option == "--no-inherit-env") {
+            used_native_job_option = true;
             command.spec.inherit_environment = false;
             continue;
         }
         if (option == "--inherit-env") {
+            used_native_job_option = true;
             command.spec.inherit_environment = true;
             continue;
         }
         if (option == "--append") {
+            used_native_job_option = true;
             command.spec.append_output = true;
             continue;
         }
@@ -131,28 +191,34 @@ parse_submit_command(std::span<const std::string_view> arguments) {
         if (option == "--socket") {
             command.socket_path = *value;
         } else if (option == "--name") {
+            used_native_job_option = true;
             command.spec.name = *value;
         } else if (option == "--cpus") {
+            used_native_job_option = true;
             auto parsed = parse_integer<std::uint32_t>(*value, option);
             if (!parsed) {
                 return std::unexpected{std::move(parsed.error())};
             }
             command.spec.resources.cpus = *parsed;
         } else if (option == "--memory-mb") {
+            used_native_job_option = true;
             auto parsed = parse_integer<std::uint64_t>(*value, option);
             if (!parsed) {
                 return std::unexpected{std::move(parsed.error())};
             }
             command.spec.resources.memory_mb = *parsed;
         } else if (option == "--gpus") {
+            used_native_job_option = true;
             auto parsed = parse_integer<std::uint32_t>(*value, option);
             if (!parsed) {
                 return std::unexpected{std::move(parsed.error())};
             }
             command.spec.resources.gpus = *parsed;
         } else if (option == "--cwd") {
+            used_native_job_option = true;
             requested_directory = std::filesystem::path{*value};
         } else if (option == "--env") {
+            used_native_job_option = true;
             auto variable = parse_environment(*value);
 
             if (!variable) {
@@ -173,8 +239,10 @@ parse_submit_command(std::span<const std::string_view> arguments) {
 
             command.spec.environment.push_back(std::move(*variable));
         } else if (option == "--stdout") {
+            used_native_job_option = true;
             command.spec.stdout_path = std::filesystem::path{*value};
         } else if (option == "--stderr") {
+            used_native_job_option = true;
             command.spec.stderr_path = std::filesystem::path{*value};
         } else {
             return std::unexpected{"unknown submit option: " +
@@ -187,7 +255,8 @@ parse_submit_command(std::span<const std::string_view> arguments) {
         return command;
     }
     if (!found_command || command.spec.argv.empty()) {
-        return std::unexpected{"submit needs -- followed by a command"};
+        return std::unexpected{
+            "submit needs a pbs script or -- followed by a command"};
     }
     if (command.socket_path.empty()) {
         return std::unexpected{"--socket cannot be empty"};
@@ -207,6 +276,10 @@ parse_submit_command(std::span<const std::string_view> arguments) {
         return std::unexpected{"job name cannot contain a slash or null"};
     }
 
+    if (found_script) {
+        return command;
+    }
+
     auto directory = resolve_working_directory(requested_directory);
 
     if (!directory) {
@@ -219,6 +292,7 @@ parse_submit_command(std::span<const std::string_view> arguments) {
 
 std::string_view submit_usage() {
     return R"usage(usage: rlbs submit [options] -- command [arguments...]
+       rlbs submit [--socket PATH] JOB.pbs
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)
@@ -234,6 +308,9 @@ options:
   --stderr PATH          stderr path relative to the job directory
   --append               append instead of truncating output files
   -h, --help             show this help
+
+basic #PBS options:
+  -N, -l, -d, -V, -v, -o, and -e
 )usage";
 }
 

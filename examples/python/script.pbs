@@ -1,0 +1,12 @@
+ #!/usr/bin/env bash
+#PBS -N hello-test
+#PBS -l select=1:ncpus=4:mem=2gb:ngpus=0
+#PBS -d /home/holo/projects/rlbs
+#PBS -V
+#PBS -v RUN_MODE=test
+#PBS -o python-test.out
+#PBS -e python-test.err
+
+cd /home/holo/projects/rlbs/examples/python/
+
+python3 hello.py
