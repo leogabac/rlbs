@@ -19,6 +19,7 @@ class LocalCoordinator;
 
 enum class ControlSocketOperation {
     inspect_path,
+    inspect_peer,
     create_socket,
     bind_socket,
     listen_socket,

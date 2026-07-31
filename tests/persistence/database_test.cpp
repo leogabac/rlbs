@@ -98,8 +98,8 @@ void test_initializes_and_reopens_database() {
         const auto version = database->schema_version();
         const auto foreign_keys = database->foreign_keys_enabled();
 
-        expect(version && *version == 4,
-               "a new database uses schema version 4");
+        expect(version && *version == 5,
+               "a new database uses schema version 5");
         expect(foreign_keys && *foreign_keys,
                "foreign keys are enabled on the rlbs connection");
     }
@@ -119,7 +119,7 @@ void test_initializes_and_reopens_database() {
 
     if (reopened) {
         const auto version = reopened->schema_version();
-        expect(version && *version == 4,
+        expect(version && *version == 5,
                "reopening does not rerun or change the schema");
     }
 }
@@ -136,7 +136,7 @@ void test_rejects_newer_schema() {
         return;
     }
 
-    expect(sqlite3_exec(connection, "PRAGMA user_version = 5;", nullptr,
+    expect(sqlite3_exec(connection, "PRAGMA user_version = 6;", nullptr,
                         nullptr, nullptr) == SQLITE_OK,
            "future database fixture sets its version");
     static_cast<void>(sqlite3_close(connection));
@@ -181,8 +181,8 @@ PRAGMA user_version = 3;
 
     if (database) {
         const auto version = database->schema_version();
-        expect(version && *version == 4,
-               "version three database reaches schema version 4");
+        expect(version && *version == 5,
+               "version three database reaches schema version 5");
     }
 
     connection = nullptr;
@@ -193,13 +193,18 @@ PRAGMA user_version = 3;
     sqlite3_stmt* statement = nullptr;
     if (connection != nullptr &&
         sqlite3_prepare_v2(connection,
-                           "SELECT queue_name FROM jobs WHERE id = 1;", -1,
+                           "SELECT queue_name, owner_uid, owner_gid "
+                           "FROM jobs WHERE id = 1;",
+                           -1,
                            &statement, nullptr) == SQLITE_OK &&
         sqlite3_step(statement) == SQLITE_ROW) {
         const std::string_view queue{reinterpret_cast<const char*>(
             sqlite3_column_text(statement, 0))};
         expect(queue == "default",
                "migration moves old jobs into the default queue");
+        expect(sqlite3_column_type(statement, 1) == SQLITE_NULL &&
+                   sqlite3_column_type(statement, 2) == SQLITE_NULL,
+               "migration keeps old jobs explicitly unowned");
     } else {
         expect(false, "upgraded job queue can be inspected");
     }

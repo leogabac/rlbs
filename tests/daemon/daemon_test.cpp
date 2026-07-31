@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -399,6 +400,12 @@ void test_real_cli_submits_to_daemon(
 
         if (loaded && *loaded &&
             (*loaded)->state == rlbs::JobState::completed) {
+            expect((*loaded)->owner &&
+                       (*loaded)->owner->user_id ==
+                           static_cast<std::uint32_t>(::getuid()) &&
+                       (*loaded)->owner->group_id ==
+                           static_cast<std::uint32_t>(::getgid()),
+                   "daemon stores kernel-observed cli ownership");
             completed = true;
             break;
         }
@@ -419,6 +426,9 @@ void test_real_cli_submits_to_daemon(
            "real rlbs queue prints the submitted job");
     expect(queued.output.contains("completed"),
            "real rlbs queue prints the final state");
+    expect(queued.output.contains(std::to_string(::getuid()) + ":" +
+                                  std::to_string(::getgid())),
+           "real rlbs queue prints peer ownership");
 
     const auto status = run_cli_command(
         cli_executable, {"status", "--socket", socket_path.string(), "1"});
@@ -427,6 +437,10 @@ void test_real_cli_submits_to_daemon(
            "real rlbs status prints the requested id");
     expect(status.output.contains("name: cli-job"),
            "real rlbs status prints the job name");
+    expect(status.output.contains(
+               "owner uid:gid: " + std::to_string(::getuid()) + ":" +
+               std::to_string(::getgid())),
+           "real rlbs status prints peer ownership");
     expect(status.output.contains("exit code: 0"),
            "real rlbs status prints the process result");
 

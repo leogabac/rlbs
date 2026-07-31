@@ -5,6 +5,7 @@
 #include <optional>
 
 #include <rlbs/core/job_result.hpp>
+#include <rlbs/core/job_owner.hpp>
 #include <rlbs/core/job_spec.hpp>
 #include <rlbs/core/types.hpp>
 
@@ -28,6 +29,7 @@ struct Job {
     std::optional<NodeId> assigned_node;
     std::optional<JobResult> result;
     std::optional<std::chrono::seconds> execution_time;
+    std::optional<JobOwner> owner;
 };
 
 [[nodiscard]] bool is_terminal(JobState state);

@@ -522,7 +522,7 @@ validate_queue(sqlite3* connection, std::string_view queue) {
 
 [[nodiscard]] std::expected<void, RepositoryError>
 insert_job_row(sqlite3* connection, const JobSpec& spec,
-               std::uint64_t queue_sequence) {
+               JobOwner owner, std::uint64_t queue_sequence) {
     constexpr const char* sql = R"sql(
 INSERT INTO jobs (
     queue_sequence,
@@ -537,8 +537,10 @@ INSERT INTO jobs (
     stderr_path,
     append_output,
     walltime_seconds,
-    queue_name
-) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    queue_name,
+    owner_uid,
+    owner_gid
+) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 )sql";
     auto statement = prepare(connection, sql, RepositoryOperation::insert_job);
 
@@ -620,6 +622,16 @@ INSERT INTO jobs (
         return result;
     }
     if (auto result = bind_text(connection, raw, 12, spec.queue, operation);
+        !result) {
+        return result;
+    }
+    if (auto result =
+            bind_integer(connection, raw, 13, owner.user_id, operation);
+        !result) {
+        return result;
+    }
+    if (auto result =
+            bind_integer(connection, raw, 14, owner.group_id, operation);
         !result) {
         return result;
     }
@@ -788,7 +800,8 @@ load_environment(sqlite3* connection, Job& job) {
 JobRepository::JobRepository(SqliteDatabase& database)
     : connection_{database.connection_} {}
 
-std::expected<Job, RepositoryError> JobRepository::submit(const JobSpec& spec) {
+std::expected<Job, RepositoryError>
+JobRepository::submit(const JobSpec& spec, JobOwner owner) {
     if (auto begun = execute(connection_, "BEGIN IMMEDIATE;",
                              RepositoryOperation::begin_transaction);
         !begun) {
@@ -807,7 +820,8 @@ std::expected<Job, RepositoryError> JobRepository::submit(const JobSpec& spec) {
         return std::unexpected{std::move(queue_sequence.error())};
     }
 
-    if (auto inserted = insert_job_row(connection_, spec, *queue_sequence);
+    if (auto inserted =
+            insert_job_row(connection_, spec, owner, *queue_sequence);
         !inserted) {
         rollback(connection_);
         return std::unexpected{std::move(inserted.error())};
@@ -844,6 +858,7 @@ std::expected<Job, RepositoryError> JobRepository::submit(const JobSpec& spec) {
         .assigned_node = std::nullopt,
         .result = std::nullopt,
         .execution_time = std::nullopt,
+        .owner = owner,
     };
 }
 
@@ -873,6 +888,8 @@ SELECT
     dumped_core,
     walltime_seconds,
     queue_name,
+    owner_uid,
+    owner_gid,
     CASE
         WHEN started_at IS NULL THEN NULL
         ELSE MAX(0, COALESCE(finished_at, unixepoch()) - started_at)
@@ -955,11 +972,41 @@ WHERE id = ?;
         .assigned_node = optional_column_text(statement->get(), 12),
         .result = std::nullopt,
         .execution_time =
-            optional_column_integer64(statement->get(), 18)
+            optional_column_integer64(statement->get(), 20)
                 .transform([](std::int64_t seconds) {
                     return std::chrono::seconds{seconds};
                 }),
+        .owner = std::nullopt,
     };
+
+    const auto owner_uid = optional_column_integer64(statement->get(), 18);
+    const auto owner_gid = optional_column_integer64(statement->get(), 19);
+
+    if (owner_uid.has_value() != owner_gid.has_value()) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_job, SQLITE_CORRUPT,
+                  "job owner uid and gid do not match")};
+    }
+    if (owner_uid && (*owner_uid < 0 ||
+                      *owner_uid >
+                          std::numeric_limits<std::uint32_t>::max())) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_job, SQLITE_CORRUPT,
+                  "job owner uid is outside the supported range")};
+    }
+    if (owner_gid && (*owner_gid < 0 ||
+                      *owner_gid >
+                          std::numeric_limits<std::uint32_t>::max())) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_job, SQLITE_CORRUPT,
+                  "job owner gid is outside the supported range")};
+    }
+    if (owner_uid) {
+        job.owner = JobOwner{
+            .user_id = static_cast<std::uint32_t>(*owner_uid),
+            .group_id = static_cast<std::uint32_t>(*owner_gid),
+        };
+    }
 
     const auto exit_code = optional_column_integer(statement->get(), 13);
     const auto terminating_signal =

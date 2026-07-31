@@ -48,6 +48,7 @@ rlbs::Job make_job(
         .assigned_node = std::nullopt,
         .result = std::nullopt,
         .execution_time = std::nullopt,
+        .owner = std::nullopt,
     };
 }
 

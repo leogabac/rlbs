@@ -13,7 +13,7 @@ namespace rlbs {
 namespace {
 
 constexpr std::uint32_t protocol_magic = 0x524c4253;
-constexpr std::uint16_t protocol_version = 4;
+constexpr std::uint16_t protocol_version = 5;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
@@ -625,6 +625,47 @@ decode_optional_duration(Reader& reader) {
         static_cast<std::chrono::seconds::rep>(*seconds)}};
 }
 
+void encode_job_owner(Writer& writer, const std::optional<JobOwner>& owner) {
+    writer.integer8(owner ? 1 : 0);
+
+    if (owner) {
+        writer.integer32(owner->user_id);
+        writer.integer32(owner->group_id);
+    }
+}
+
+[[nodiscard]] std::expected<std::optional<JobOwner>, ProtocolError>
+decode_job_owner(Reader& reader) {
+    auto present = reader.integer8();
+
+    if (!present) {
+        return std::unexpected{std::move(present.error())};
+    }
+    if (*present > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode,
+                  "job owner flag is not boolean")};
+    }
+    if (*present == 0) {
+        return std::optional<JobOwner>{};
+    }
+
+    auto user_id = reader.integer32();
+    auto group_id = reader.integer32();
+
+    if (!user_id) {
+        return std::unexpected{std::move(user_id.error())};
+    }
+    if (!group_id) {
+        return std::unexpected{std::move(group_id.error())};
+    }
+
+    return std::optional<JobOwner>{JobOwner{
+        .user_id = *user_id,
+        .group_id = *group_id,
+    }};
+}
+
 [[nodiscard]] std::expected<void, ProtocolError>
 encode_batch_queue(Writer& writer, const BatchQueue& queue) {
     if (auto written = writer.text(queue.name); !written) {
@@ -721,6 +762,7 @@ encode_job_summary(Writer& writer, const JobSummary& job) {
 
     encode_optional_duration(writer, job.walltime);
     encode_optional_duration(writer, job.execution_time);
+    encode_job_owner(writer, job.owner);
     return {};
 }
 
@@ -736,6 +778,7 @@ decode_job_summary(Reader& reader) {
     auto assigned_node = reader.optional_text();
     auto walltime = decode_optional_duration(reader);
     auto execution_time = decode_optional_duration(reader);
+    auto owner = decode_job_owner(reader);
 
     if (!id) {
         return std::unexpected{std::move(id.error())};
@@ -767,6 +810,9 @@ decode_job_summary(Reader& reader) {
     if (!execution_time) {
         return std::unexpected{std::move(execution_time.error())};
     }
+    if (!owner) {
+        return std::unexpected{std::move(owner.error())};
+    }
 
     return JobSummary{
         .id = *id,
@@ -782,6 +828,7 @@ decode_job_summary(Reader& reader) {
         .assigned_node = std::move(*assigned_node),
         .walltime = std::move(*walltime),
         .execution_time = std::move(*execution_time),
+        .owner = std::move(*owner),
     };
 }
 
@@ -802,6 +849,7 @@ decode_job_summary(Reader& reader) {
 
     encode_job_result(writer, job.result);
     encode_optional_duration(writer, job.execution_time);
+    encode_job_owner(writer, job.owner);
     return {};
 }
 
@@ -813,6 +861,7 @@ decode_job_summary(Reader& reader) {
     auto assigned_node = reader.optional_text();
     auto result = decode_job_result(reader);
     auto execution_time = decode_optional_duration(reader);
+    auto owner = decode_job_owner(reader);
 
     if (!id) {
         return std::unexpected{std::move(id.error())};
@@ -835,6 +884,9 @@ decode_job_summary(Reader& reader) {
     if (!execution_time) {
         return std::unexpected{std::move(execution_time.error())};
     }
+    if (!owner) {
+        return std::unexpected{std::move(owner.error())};
+    }
 
     return Job{
         .id = *id,
@@ -844,6 +896,7 @@ decode_job_summary(Reader& reader) {
         .assigned_node = std::move(*assigned_node),
         .result = std::move(*result),
         .execution_time = std::move(*execution_time),
+        .owner = std::move(*owner),
     };
 }
 

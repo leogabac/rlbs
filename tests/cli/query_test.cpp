@@ -90,6 +90,11 @@ void test_queue_format() {
             .assigned_node = std::nullopt,
             .walltime = std::chrono::seconds{300},
             .execution_time = std::nullopt,
+            .owner =
+                rlbs::JobOwner{
+                    .user_id = 1000,
+                    .group_id = 100,
+                },
         },
         {
             .id = 8,
@@ -100,6 +105,7 @@ void test_queue_format() {
             .assigned_node = "head",
             .walltime = std::chrono::seconds{600},
             .execution_time = std::chrono::seconds{17},
+            .owner = std::nullopt,
         },
     };
     const auto output = rlbs::format_queue(jobs);
@@ -109,6 +115,8 @@ void test_queue_format() {
     expect(output.contains("8       running"), "queue prints running jobs");
     expect(output.contains("head"), "queue prints assigned nodes");
     expect(output.contains("short"), "queue prints queue names");
+    expect(output.contains("1000:100"), "queue prints numeric job ownership");
+    expect(output.contains("legacy"), "queue marks an old unowned job");
     expect(output.contains("running job"), "queue prints job names");
     expect(output.contains("00:00:17"), "queue prints execution time");
     expect(output.contains("00:10:00"), "queue prints walltime");
@@ -141,12 +149,19 @@ void test_status_format() {
                 .dumped_core = false,
             },
         .execution_time = std::chrono::seconds{17},
+        .owner =
+            rlbs::JobOwner{
+                .user_id = 1000,
+                .group_id = 100,
+            },
     };
     const auto output = rlbs::format_status(job);
 
     expect(output.contains("job id: 9"), "status prints the job id");
     expect(output.contains("state: completed"), "status prints the state");
     expect(output.contains("queue: short"), "status prints the queue");
+    expect(output.contains("owner uid:gid: 1000:100"),
+           "status prints numeric job ownership");
     expect(output.contains("node: head"), "status prints the node");
     expect(output.contains("command: \"/bin/sh\" \"-c\""),
            "status keeps command arguments separate");

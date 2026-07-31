@@ -84,6 +84,7 @@ struct JobSummary {
     std::optional<NodeId> assigned_node;
     std::optional<std::chrono::seconds> walltime;
     std::optional<std::chrono::seconds> execution_time;
+    std::optional<JobOwner> owner;
 };
 
 struct QueueResponse {

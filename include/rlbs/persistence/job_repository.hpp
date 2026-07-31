@@ -58,7 +58,7 @@ class JobRepository {
     explicit JobRepository(SqliteDatabase& database);
 
     [[nodiscard]] std::expected<Job, RepositoryError>
-    submit(const JobSpec& spec);
+    submit(const JobSpec& spec, JobOwner owner);
 
     [[nodiscard]] std::expected<std::optional<Job>, RepositoryError>
     find(JobId id) const;

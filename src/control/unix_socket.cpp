@@ -192,15 +192,40 @@ receive_frame(int socket) {
     return frame;
 }
 
+[[nodiscard]] std::expected<JobOwner, ControlSocketError>
+peer_owner(int socket) {
+    ucred credentials{};
+    socklen_t size = sizeof(credentials);
+
+    // this comes from the kernel for the connected unix socket. there is no
+    // username field in the request on purpose: clients are very capable of
+    // typing "root" into a string and that does not make it identity
+    if (::getsockopt(socket, SOL_SOCKET, SO_PEERCRED, &credentials, &size) < 0) {
+        return std::unexpected{
+            error(ControlSocketOperation::inspect_peer, errno,
+                  "could not read control peer credentials")};
+    }
+    if (size != sizeof(credentials)) {
+        return std::unexpected{
+            error(ControlSocketOperation::inspect_peer, EPROTO,
+                  "control peer credentials have the wrong size")};
+    }
+
+    return JobOwner{
+        .user_id = static_cast<std::uint32_t>(credentials.uid),
+        .group_id = static_cast<std::uint32_t>(credentials.gid),
+    };
+}
+
 [[nodiscard]] ControlResponse handle_request(const ControlRequest& request,
                                              JobRepository& repository,
                                              QueueRepository& queues,
                                              LocalCoordinator& coordinator,
-                                             Logger* logger) {
+                                             JobOwner owner, Logger* logger) {
     // transport ends here. every command uses repository methods instead of
     // teaching socket code enough sqlite to become a second database layer
     if (const auto* submitted = std::get_if<SubmitRequest>(&request)) {
-        auto job = repository.submit(submitted->spec);
+        auto job = repository.submit(submitted->spec, owner);
 
         if (!job) {
             if (logger != nullptr) {
@@ -213,7 +238,9 @@ receive_frame(int socket) {
 
         if (logger != nullptr) {
             logger->info("control", "accepted job " + std::to_string(job->id) +
-                                        " name=" + job->spec.name);
+                                        " name=" + job->spec.name +
+                                        " uid=" +
+                                        std::to_string(owner.user_id));
         }
 
         return SubmitResponse{.job_id = job->id};
@@ -239,6 +266,7 @@ receive_frame(int socket) {
                 .assigned_node = job.assigned_node,
                 .walltime = job.spec.walltime,
                 .execution_time = job.execution_time,
+                .owner = job.owner,
             });
         }
 
@@ -458,6 +486,13 @@ std::expected<std::size_t, ControlSocketError> ControlServer::poll() {
 void ControlServer::handle_client(int client_socket) {
     // one connection carries exactly one request and one response for now. that
     // keeps ownership painfully clear while the command set is still tiny
+    auto owner = peer_owner(client_socket);
+
+    if (!owner) {
+        send_error_response(client_socket, owner.error().message);
+        return;
+    }
+
     auto frame = receive_frame(client_socket);
 
     if (!frame) {
@@ -474,7 +509,7 @@ void ControlServer::handle_client(int client_socket) {
 
     auto response = encode_response(
         handle_request(*request, *repository_, *queues_, *coordinator_,
-                       logger_));
+                       *owner, logger_));
 
     if (!response) {
         send_error_response(client_socket, response.error().message);

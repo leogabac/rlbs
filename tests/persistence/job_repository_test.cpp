@@ -14,6 +14,11 @@ namespace {
 
 int failures = 0;
 
+constexpr rlbs::JobOwner test_owner{
+    .user_id = 1000,
+    .group_id = 100,
+};
+
 void expect(bool condition, std::string_view message) {
     if (!condition) {
         std::cerr << "failed: " << message << '\n';
@@ -142,7 +147,7 @@ void test_submit_find_and_reopen() {
         expect(added.has_value(), "job queue fixture is added");
 
         rlbs::JobRepository repository{*database};
-        const auto submitted = repository.submit(spec);
+        const auto submitted = repository.submit(spec, test_owner);
 
         expect(submitted.has_value(), "job submission succeeds");
 
@@ -156,6 +161,8 @@ void test_submit_find_and_reopen() {
                "first submission gets the first queue position");
         expect(submitted->state == rlbs::JobState::pending,
                "new jobs start pending");
+        expect(submitted->owner == test_owner,
+               "submission stores its trusted owner");
         expect_same_spec(submitted->spec, spec);
     }
 
@@ -178,6 +185,8 @@ void test_submit_find_and_reopen() {
                "loaded job keeps its queue position");
         expect((*loaded)->state == rlbs::JobState::pending,
                "loaded job keeps its state");
+        expect((*loaded)->owner == test_owner,
+               "loaded job keeps its owner");
         expect_same_spec((*loaded)->spec, spec);
     }
 
@@ -196,9 +205,9 @@ void test_pending_jobs_keep_fifo_order() {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto first = repository.submit(example_spec("first"));
-    const auto second = repository.submit(example_spec("second"));
-    const auto third = repository.submit(example_spec("third"));
+    const auto first = repository.submit(example_spec("first"), test_owner);
+    const auto second = repository.submit(example_spec("second"), test_owner);
+    const auto third = repository.submit(example_spec("third"), test_owner);
 
     expect(first && second && third, "fifo jobs submit");
 
@@ -230,8 +239,10 @@ void test_all_jobs_include_finished_jobs() {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto first = repository.submit(example_spec("finished"));
-    const auto second = repository.submit(example_spec("waiting"));
+    const auto first =
+        repository.submit(example_spec("finished"), test_owner);
+    const auto second =
+        repository.submit(example_spec("waiting"), test_owner);
 
     expect(first && second, "all-jobs fixtures submit");
 
@@ -281,7 +292,7 @@ void test_failed_submission_rolls_back() {
     auto invalid = example_spec("duplicate environment");
     invalid.environment.push_back({.name = "FIRST", .value = "again"});
 
-    const auto rejected = repository.submit(invalid);
+    const auto rejected = repository.submit(invalid, test_owner);
     expect(!rejected, "duplicate environment submission is rejected");
     expect(!rejected && rejected.error().operation ==
                             rlbs::RepositoryOperation::insert_environment,
@@ -291,7 +302,8 @@ void test_failed_submission_rolls_back() {
     expect(pending_after_failure && pending_after_failure->empty(),
            "failed submission leaves no partial job behind");
 
-    const auto valid = repository.submit(example_spec("valid afterward"));
+    const auto valid =
+        repository.submit(example_spec("valid afterward"), test_owner);
     expect(valid.has_value(), "repository still works after rollback");
     expect(valid && valid->queue_sequence == 1,
            "rolled back job does not consume a queue position");
@@ -311,7 +323,7 @@ void test_rejects_unknown_queue() {
     rlbs::JobRepository repository{*database};
     auto spec = example_spec("wrong queue");
     spec.queue = "missing";
-    const auto rejected = repository.submit(spec);
+    const auto rejected = repository.submit(spec, test_owner);
 
     expect(!rejected, "job cannot enter an unknown queue");
     expect(!rejected &&
@@ -336,7 +348,8 @@ void test_rejects_disabled_queue() {
            "default queue is disabled");
 
     rlbs::JobRepository repository{*database};
-    const auto rejected = repository.submit(example_spec("disabled queue"));
+    const auto rejected =
+        repository.submit(example_spec("disabled queue"), test_owner);
 
     expect(!rejected, "disabled queue rejects a new job");
     expect(!rejected &&
@@ -357,7 +370,8 @@ void test_transitions_store_results_and_events() {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto submitted = repository.submit(example_spec("transitioned"));
+    const auto submitted =
+        repository.submit(example_spec("transitioned"), test_owner);
 
     expect(submitted.has_value(), "transition job submits");
 
@@ -460,7 +474,8 @@ void test_invalid_transition_changes_nothing() {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto submitted = repository.submit(example_spec("still pending"));
+    const auto submitted =
+        repository.submit(example_spec("still pending"), test_owner);
 
     if (!submitted) {
         expect(false, "invalid transition fixture submits");
@@ -500,7 +515,8 @@ void test_event_failure_rolls_back_state() {
     }
 
     rlbs::JobRepository repository{*database};
-    const auto submitted = repository.submit(example_spec("atomic transition"));
+    const auto submitted =
+        repository.submit(example_spec("atomic transition"), test_owner);
 
     if (!submitted) {
         expect(false, "event rollback fixture submits");

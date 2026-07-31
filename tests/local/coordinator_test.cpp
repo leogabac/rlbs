@@ -17,6 +17,11 @@ namespace {
 
 int failures = 0;
 
+constexpr rlbs::JobOwner test_owner{
+    .user_id = 1000,
+    .group_id = 100,
+};
+
 void expect(bool condition, std::string_view message) {
     if (!condition) {
         std::cerr << "failed: " << message << '\n';
@@ -129,8 +134,10 @@ void test_queued_job_runs_to_completion() {
 
     rlbs::JobRepository repository{*database};
     rlbs::QueueRepository queues{*database};
-    const auto submitted = repository.submit(local_spec(
-        temporary.path(), {"/bin/sh", "-c", "printf 'scheduled\\n'; exit 7"}));
+    const auto submitted = repository.submit(
+        local_spec(temporary.path(),
+                   {"/bin/sh", "-c", "printf 'scheduled\\n'; exit 7"}),
+        test_owner);
 
     expect(submitted.has_value(), "local job submits");
 
@@ -188,7 +195,7 @@ void test_job_waits_when_resources_do_not_fit() {
     rlbs::QueueRepository queues{*database};
     auto spec = local_spec(temporary.path(), {"/bin/true"});
     spec.resources.cpus = 3;
-    const auto submitted = repository.submit(spec);
+    const auto submitted = repository.submit(spec, test_owner);
 
     if (!submitted) {
         expect(false, "waiting job submits");
@@ -225,7 +232,8 @@ void test_launch_failure_marks_job_failed() {
     rlbs::JobRepository repository{*database};
     rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
-        local_spec(temporary.path(), {"/definitely/not/an/rlbs/executable"}));
+        local_spec(temporary.path(), {"/definitely/not/an/rlbs/executable"}),
+        test_owner);
 
     if (!submitted) {
         expect(false, "launch failure job submits");
@@ -272,7 +280,8 @@ void test_pending_job_can_be_cancelled() {
     rlbs::JobRepository repository{*database};
     rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
-        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
+        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}),
+        test_owner);
 
     if (!submitted) {
         expect(false, "pending cancellation job submits");
@@ -312,7 +321,8 @@ void test_running_job_can_be_cancelled() {
     rlbs::JobRepository repository{*database};
     rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
-        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
+        local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}),
+        test_owner);
 
     if (!submitted) {
         expect(false, "running cancellation job submits");
@@ -371,7 +381,7 @@ void test_pbs_runtime_environment() {
         {.name = "PBS_O_WORKDIR", .value = "/fake/work"},
         {.name = "PBS_NODEFILE", .value = "/fake/nodes"},
     };
-    const auto submitted = repository.submit(spec);
+    const auto submitted = repository.submit(spec, test_owner);
 
     if (!submitted) {
         expect(false, "pbs runtime job submits");
@@ -427,7 +437,7 @@ void test_walltime_stops_running_job() {
         temporary.path(),
         {"/bin/sh", "-c", "printf 'before timeout\\n'; sleep 30"});
     spec.walltime = std::chrono::seconds{1};
-    const auto submitted = repository.submit(spec);
+    const auto submitted = repository.submit(spec, test_owner);
 
     if (!submitted) {
         expect(false, "walltime job submits");
@@ -514,9 +524,9 @@ void test_coordinator_enforces_queue_running_limit() {
     other_spec.stderr_path = "other.err";
     other_spec.queue = "other";
 
-    const auto first = repository.submit(first_spec);
-    const auto second = repository.submit(second_spec);
-    const auto other = repository.submit(other_spec);
+    const auto first = repository.submit(first_spec, test_owner);
+    const auto second = repository.submit(second_spec, test_owner);
+    const auto other = repository.submit(other_spec, test_owner);
     expect(first && second && other, "queue policy jobs submit");
 
     if (!first || !second || !other) {

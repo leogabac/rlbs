@@ -230,6 +230,11 @@ void test_query_responses_round_trip() {
                     .assigned_node = std::nullopt,
                     .walltime = std::chrono::seconds{300},
                     .execution_time = std::nullopt,
+                    .owner =
+                        rlbs::JobOwner{
+                            .user_id = 1000,
+                            .group_id = 100,
+                        },
                 },
                 {
                     .id = 12,
@@ -240,6 +245,7 @@ void test_query_responses_round_trip() {
                     .assigned_node = "head",
                     .walltime = std::chrono::seconds{600},
                     .execution_time = std::chrono::seconds{17},
+                    .owner = std::nullopt,
                 },
             },
     };
@@ -256,6 +262,11 @@ void test_query_responses_round_trip() {
                 .dumped_core = false,
             },
         .execution_time = std::chrono::seconds{17},
+        .owner =
+            rlbs::JobOwner{
+                .user_id = 1000,
+                .group_id = 100,
+            },
     };
     const auto queue = rlbs::encode_response(expected_queue);
     const auto status =
@@ -296,6 +307,9 @@ void test_query_responses_round_trip() {
                        "queue response keeps assigned nodes");
                 expect(jobs[1].execution_time == std::chrono::seconds{17},
                        "queue response keeps execution time");
+                expect(jobs[0].owner &&
+                           jobs[0].owner->user_id == 1000,
+                       "queue response keeps job ownership");
             }
         }
     }
@@ -315,6 +329,8 @@ void test_query_responses_round_trip() {
                    "status response keeps process results");
             expect(job.execution_time == expected_job.execution_time,
                    "status response keeps execution time");
+            expect(job.owner == expected_job.owner,
+                   "status response keeps job ownership");
         }
     }
 

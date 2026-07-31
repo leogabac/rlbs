@@ -89,6 +89,11 @@ void write_file(const std::filesystem::path& path, std::string_view contents,
         .assigned_node = "local",
         .result = std::nullopt,
         .execution_time = std::nullopt,
+        .owner =
+            rlbs::JobOwner{
+                .user_id = 1000,
+                .group_id = 100,
+            },
     };
 }
 
