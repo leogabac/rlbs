@@ -72,6 +72,7 @@ void test_complete_native_script() {
 # an ordinary comment can live around the header
 #RLBS version = 1
 #RLBS name = "native runtime"
+#RLBS queue = "short"
 #RLBS walltime = "01:02:03"
 #RLBS resources.cpus = 4
 #RLBS resources.memory_mb = 2048
@@ -95,6 +96,7 @@ printf 'hello\n'
     }
 
     expect(parsed->name == "native runtime", "native name parses");
+    expect(parsed->queue == "short", "native queue parses");
     expect(parsed->walltime == std::chrono::seconds{3723},
            "native walltime parses");
     expect(parsed->resources.cpus == 4, "native cpus parse");
@@ -129,6 +131,8 @@ void test_native_defaults() {
     if (parsed) {
         expect(parsed->name == "defaults.rlbs",
                "native script filename is the default name");
+        expect(parsed->queue == "default",
+               "native script defaults to the default queue");
         expect(parsed->resources.cpus == 1,
                "native script defaults to one cpu");
         expect(parsed->working_directory == temporary.path(),

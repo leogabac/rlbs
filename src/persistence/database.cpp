@@ -7,7 +7,7 @@
 namespace rlbs {
 namespace {
 
-constexpr int current_schema_version = 3;
+constexpr int current_schema_version = 4;
 
 // sqlite statements need finalizing on every return path, including the
 // annoying ones. this little owner keeps that cleanup local instead of trusting
@@ -158,6 +158,31 @@ INSERT INTO queues (
 PRAGMA user_version = 3;
 )sql";
 
+constexpr const char* schema_v4 = R"sql(
+ALTER TABLE jobs ADD COLUMN queue_name TEXT REFERENCES queues(name);
+
+UPDATE jobs SET queue_name = 'default' WHERE queue_name IS NULL;
+
+CREATE TRIGGER jobs_queue_name_insert_guard
+BEFORE INSERT ON jobs
+WHEN NEW.queue_name IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'job queue cannot be null');
+END;
+
+CREATE TRIGGER jobs_queue_name_update_guard
+BEFORE UPDATE OF queue_name ON jobs
+WHEN NEW.queue_name IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'job queue cannot be null');
+END;
+
+CREATE INDEX jobs_named_queue_index
+ON jobs(queue_name, state, queue_sequence);
+
+PRAGMA user_version = 4;
+)sql";
+
 } // namespace
 
 SqliteDatabase::SqliteDatabase(sqlite3* connection) : connection_{connection} {}
@@ -257,6 +282,14 @@ std::expected<void, DatabaseError> SqliteDatabase::migrate() {
 
     if (*version < 3) {
         if (auto upgraded = execute(schema_v3, DatabaseOperation::migrate);
+            !upgraded) {
+            static_cast<void>(execute("ROLLBACK;", DatabaseOperation::migrate));
+            return upgraded;
+        }
+    }
+
+    if (*version < 4) {
+        if (auto upgraded = execute(schema_v4, DatabaseOperation::migrate);
             !upgraded) {
             static_cast<void>(execute("ROLLBACK;", DatabaseOperation::migrate));
             return upgraded;

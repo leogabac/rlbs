@@ -481,6 +481,39 @@ next_queue_sequence(sqlite3* connection) {
 }
 
 [[nodiscard]] std::expected<void, RepositoryError>
+validate_queue(sqlite3* connection, std::string_view queue) {
+    auto statement = prepare(connection,
+                             "SELECT 1 FROM queues WHERE name = ?;",
+                             RepositoryOperation::validate_queue);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    if (auto bound =
+            bind_text(connection, statement->get(), 1, queue,
+                      RepositoryOperation::validate_queue);
+        !bound) {
+        return bound;
+    }
+
+    const int result = sqlite3_step(statement->get());
+
+    if (result == SQLITE_ROW) {
+        return {};
+    }
+    if (result == SQLITE_DONE) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_queue,
+                  SQLITE_CONSTRAINT,
+                  "queue does not exist: " + std::string{queue})};
+    }
+
+    return std::unexpected{error(connection,
+                                 RepositoryOperation::validate_queue, result)};
+}
+
+[[nodiscard]] std::expected<void, RepositoryError>
 insert_job_row(sqlite3* connection, const JobSpec& spec,
                std::uint64_t queue_sequence) {
     constexpr const char* sql = R"sql(
@@ -496,8 +529,9 @@ INSERT INTO jobs (
     stdout_path,
     stderr_path,
     append_output,
-    walltime_seconds
-) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    walltime_seconds,
+    queue_name
+) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 )sql";
     auto statement = prepare(connection, sql, RepositoryOperation::insert_job);
 
@@ -575,6 +609,10 @@ INSERT INTO jobs (
 
     if (auto result =
             bind_optional_integer(connection, raw, 11, walltime, operation);
+        !result) {
+        return result;
+    }
+    if (auto result = bind_text(connection, raw, 12, spec.queue, operation);
         !result) {
         return result;
     }
@@ -750,6 +788,11 @@ std::expected<Job, RepositoryError> JobRepository::submit(const JobSpec& spec) {
         return std::unexpected{std::move(begun.error())};
     }
 
+    if (auto valid = validate_queue(connection_, spec.queue); !valid) {
+        rollback(connection_);
+        return std::unexpected{std::move(valid.error())};
+    }
+
     auto queue_sequence = next_queue_sequence(connection_);
 
     if (!queue_sequence) {
@@ -822,6 +865,7 @@ SELECT
     terminating_signal,
     dumped_core,
     walltime_seconds,
+    queue_name,
     CASE
         WHEN started_at IS NULL THEN NULL
         ELSE MAX(0, COALESCE(finished_at, unixepoch()) - started_at)
@@ -898,12 +942,13 @@ WHERE id = ?;
                         .transform([](std::int64_t seconds) {
                             return std::chrono::seconds{seconds};
                         }),
+                .queue = column_text(statement->get(), 17),
             },
         .state = *state,
         .assigned_node = optional_column_text(statement->get(), 12),
         .result = std::nullopt,
         .execution_time =
-            optional_column_integer64(statement->get(), 17)
+            optional_column_integer64(statement->get(), 18)
                 .transform([](std::int64_t seconds) {
                     return std::chrono::seconds{seconds};
                 }),

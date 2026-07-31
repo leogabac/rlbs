@@ -81,6 +81,7 @@ local_spec(const std::filesystem::path& working_directory,
         .stderr_path = "job.err",
         .append_output = false,
         .walltime = std::nullopt,
+        .queue = "default",
     };
 }
 

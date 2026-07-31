@@ -71,6 +71,7 @@ void test_complete_script() {
     write_file(script, R"pbs(#!/usr/bin/env python3
 # this ordinary comment does not close the directive section
 #PBS -N "python runtime"
+#PBS -q short
 #PBS -l select=1:ncpus=4:mem=2gb:ngpus=1
 #PBS -l walltime=01:02:03
 #PBS -d /tmp
@@ -95,6 +96,7 @@ print("hello")
     }
 
     expect(parsed->name == "python runtime", "pbs -N sets the job name");
+    expect(parsed->queue == "short", "pbs -q sets the queue");
     expect(parsed->resources.cpus == 4, "pbs select sets ncpus");
     expect(parsed->resources.memory_mb == 2048, "pbs select converts memory");
     expect(parsed->resources.gpus == 1, "pbs select sets ngpus");
@@ -134,6 +136,8 @@ echo hello
     if (parsed) {
         expect(parsed->name == "plain.pbs",
                "script filename is the default job name");
+        expect(parsed->queue == "default",
+               "pbs script defaults to the default queue");
         expect(parsed->resources.cpus == 2, "direct ncpus parses");
         expect(parsed->resources.memory_mb == 512, "direct memory parses");
         expect(parsed->argv.size() == 2 && parsed->argv[0] == "/bin/sh",

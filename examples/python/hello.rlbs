@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #RLBS version = 1
 #RLBS name = "native-hello"
+#RLBS queue = "default"
 #RLBS walltime = "00:01:00"
 #RLBS resources.cpus = 1
 #RLBS resources.memory_mb = 128

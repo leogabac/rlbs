@@ -232,6 +232,7 @@ receive_frame(int socket) {
             summaries.push_back({
                 .id = job.id,
                 .name = job.spec.name,
+                .queue = job.spec.queue,
                 .state = job.state,
                 .resources = job.spec.resources,
                 .assigned_node = job.assigned_node,

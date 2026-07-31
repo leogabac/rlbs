@@ -2,6 +2,7 @@
 #include <rlbs/daemon/config.hpp>
 #include <rlbs/persistence/database.hpp>
 #include <rlbs/persistence/job_repository.hpp>
+#include <rlbs/persistence/queue_repository.hpp>
 
 #include <array>
 #include <cerrno>
@@ -276,6 +277,24 @@ void test_real_cli_submits_to_daemon(
         return;
     }
 
+    rlbs::QueueRepository queues{*database};
+    const auto short_queue = queues.add({
+        .name = "short",
+        .priority = 100,
+        .enabled = true,
+        .started = true,
+        .max_running = std::nullopt,
+    });
+    const auto long_queue = queues.add({
+        .name = "long",
+        .priority = 10,
+        .enabled = true,
+        .started = true,
+        .max_running = std::nullopt,
+    });
+    expect(short_queue && long_queue,
+           "daemon integration queues are created");
+
     rlbs::JobRepository repository{*database};
     const pid_t child = ::fork();
 
@@ -451,6 +470,7 @@ void test_real_cli_submits_to_daemon(
         std::ofstream script{pbs_script};
         script << "#!/bin/sh\n"
                << "#PBS -N pbs-script\n"
+               << "#PBS -q short\n"
                << "#PBS -l ncpus=1,mem=64mb\n"
                << "#PBS -l walltime=00:05:00\n"
                << "#PBS -d " << temporary.path().string() << "\n"
@@ -462,8 +482,9 @@ void test_real_cli_submits_to_daemon(
     }
 
     const auto pbs_submitted =
-        run_cli_command(qsub_executable,
-                        {"--socket", socket_path.string(), pbs_script.string()});
+        run_cli_command(qsub_executable, {"--socket", socket_path.string(),
+                                          "-q", "long",
+                                          pbs_script.string()});
     expect(pbs_submitted.exit_code == 0, "qsub submits a pbs script");
     expect(pbs_submitted.output == "3\n",
            "qsub prints only the assigned job id");
@@ -475,6 +496,8 @@ void test_real_cli_submits_to_daemon(
 
         if (loaded && *loaded &&
             (*loaded)->state == rlbs::JobState::completed) {
+            expect((*loaded)->spec.queue == "long",
+                   "qsub -q overrides the script queue");
             pbs_completed = true;
             break;
         }
@@ -496,6 +519,8 @@ void test_real_cli_submits_to_daemon(
            "plain qstat reuses the queue handler");
     expect(qstat_queue.output.contains("00:05:00"),
            "qstat queue prints requested walltime");
+    expect(qstat_queue.output.contains("long"),
+           "qstat queue prints the selected queue");
 
     const auto qstat_status = run_cli_command(
         qstat_executable, {"--socket", socket_path.string(), "3"});
@@ -504,6 +529,8 @@ void test_real_cli_submits_to_daemon(
            "qstat with a job id reuses the status handler");
     expect(qstat_status.output.contains("execution time:"),
            "qstat status prints execution time");
+    expect(qstat_status.output.contains("queue: long"),
+           "qstat status prints the selected queue");
 
     const auto native_script = temporary.path() / "integration.rlbs";
     {
@@ -511,6 +538,7 @@ void test_real_cli_submits_to_daemon(
         script << "#!/usr/bin/env bash\n"
                << "#RLBS version = 1\n"
                << "#RLBS name = \"native-script\"\n"
+               << "#RLBS queue = \"short\"\n"
                << "#RLBS resources.cpus = 1\n"
                << "#RLBS resources.memory_mb = 64\n"
                << "#RLBS working_directory = \"" << temporary.path().string()
@@ -537,6 +565,8 @@ void test_real_cli_submits_to_daemon(
 
         if (loaded && *loaded &&
             (*loaded)->state == rlbs::JobState::completed) {
+            expect((*loaded)->spec.queue == "short",
+                   "native script stores its selected queue");
             native_completed = true;
             break;
         }

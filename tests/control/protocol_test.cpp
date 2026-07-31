@@ -37,6 +37,7 @@ void expect(bool condition, std::string_view message) {
         .stderr_path = std::nullopt,
         .append_output = true,
         .walltime = std::chrono::seconds{90},
+        .queue = "short",
     };
 }
 
@@ -85,6 +86,7 @@ void test_submit_request_round_trip() {
            "request keeps append mode");
     expect(actual.walltime == expected.walltime,
            "request keeps walltime");
+    expect(actual.queue == expected.queue, "request keeps the queue");
 }
 
 void test_query_requests_round_trip() {
@@ -166,6 +168,7 @@ void test_query_responses_round_trip() {
                 {
                     .id = 11,
                     .name = "queued",
+                    .queue = "short",
                     .state = rlbs::JobState::pending,
                     .resources = {.cpus = 2, .memory_mb = 1024, .gpus = 0},
                     .assigned_node = std::nullopt,
@@ -175,6 +178,7 @@ void test_query_responses_round_trip() {
                 {
                     .id = 12,
                     .name = "active",
+                    .queue = "long",
                     .state = rlbs::JobState::running,
                     .resources = {.cpus = 4, .memory_mb = 8192, .gpus = 1},
                     .assigned_node = "head",
@@ -230,6 +234,8 @@ void test_query_responses_round_trip() {
             if (jobs.size() == expected_queue.jobs.size()) {
                 expect(jobs[0].name == "queued",
                        "queue response keeps job names");
+                expect(jobs[0].queue == "short",
+                       "queue response keeps queue names");
                 expect(jobs[1].assigned_node == "head",
                        "queue response keeps assigned nodes");
                 expect(jobs[1].execution_time == std::chrono::seconds{17},

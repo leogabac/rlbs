@@ -28,6 +28,7 @@ struct JobSpec {
     std::optional<std::filesystem::path> stderr_path;
     bool append_output{false};
     std::optional<std::chrono::seconds> walltime;
+    std::string queue{"default"};
 };
 
 } // namespace rlbs

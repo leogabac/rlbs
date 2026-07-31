@@ -54,6 +54,7 @@ struct SubmitResponse {
 struct JobSummary {
     JobId id{0};
     std::string name;
+    std::string queue;
     JobState state{JobState::pending};
     ResourceRequest resources;
     std::optional<NodeId> assigned_node;

@@ -9,7 +9,7 @@ namespace rlbs {
 namespace {
 
 constexpr std::uint32_t protocol_magic = 0x524c4253;
-constexpr std::uint16_t protocol_version = 2;
+constexpr std::uint16_t protocol_version = 3;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
@@ -262,6 +262,9 @@ encode_job_spec(Writer& writer, const JobSpec& spec) {
     if (auto written = writer.text(spec.name); !written) {
         return written;
     }
+    if (auto written = writer.text(spec.queue); !written) {
+        return written;
+    }
 
     writer.integer32(spec.resources.cpus);
     writer.integer64(spec.resources.memory_mb);
@@ -313,6 +316,7 @@ decode_job_spec(Reader& reader) {
     // decode into temporary values first. jobspec only exists after every field
     // passed its bounds and boolean checks, never as a half-decoded mystery
     auto name = reader.text();
+    auto queue = reader.text();
     auto cpus = reader.integer32();
     auto memory_mb = reader.integer64();
     auto gpus = reader.integer32();
@@ -320,6 +324,9 @@ decode_job_spec(Reader& reader) {
 
     if (!name) {
         return std::unexpected{std::move(name.error())};
+    }
+    if (!queue) {
+        return std::unexpected{std::move(queue.error())};
     }
     if (!cpus) {
         return std::unexpected{std::move(cpus.error())};
@@ -459,6 +466,7 @@ decode_job_spec(Reader& reader) {
         .stderr_path = std::move(*stderr_path),
         .append_output = *append_output != 0,
         .walltime = walltime,
+        .queue = std::move(*queue),
     };
 }
 
@@ -615,6 +623,9 @@ encode_job_summary(Writer& writer, const JobSummary& job) {
     if (auto written = writer.text(job.name); !written) {
         return written;
     }
+    if (auto written = writer.text(job.queue); !written) {
+        return written;
+    }
 
     encode_job_state(writer, job.state);
     writer.integer32(job.resources.cpus);
@@ -633,6 +644,7 @@ encode_job_summary(Writer& writer, const JobSummary& job) {
 decode_job_summary(Reader& reader) {
     auto id = reader.integer64();
     auto name = reader.text();
+    auto queue = reader.text();
     auto state = decode_job_state(reader);
     auto cpus = reader.integer32();
     auto memory_mb = reader.integer64();
@@ -646,6 +658,9 @@ decode_job_summary(Reader& reader) {
     }
     if (!name) {
         return std::unexpected{std::move(name.error())};
+    }
+    if (!queue) {
+        return std::unexpected{std::move(queue.error())};
     }
     if (!state) {
         return std::unexpected{std::move(state.error())};
@@ -672,6 +687,7 @@ decode_job_summary(Reader& reader) {
     return JobSummary{
         .id = *id,
         .name = std::move(*name),
+        .queue = std::move(*queue),
         .state = *state,
         .resources =
             {

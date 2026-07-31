@@ -257,6 +257,20 @@ parse_assignment(ParserState& state, std::string_view assignment) {
         state.spec.name = std::move(*parsed);
         return {};
     }
+    if (key == "queue") {
+        auto parsed = parse_string(value, key);
+
+        if (!parsed) {
+            return std::unexpected{std::move(parsed.error())};
+        }
+        if (parsed->empty() || parsed->find('\0') != std::string::npos) {
+            return std::unexpected{
+                "queue name cannot be empty or contain null"};
+        }
+
+        state.spec.queue = std::move(*parsed);
+        return {};
+    }
     if (key == "walltime") {
         auto text = parse_string(value, key);
 

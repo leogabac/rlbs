@@ -26,6 +26,7 @@ struct ParserState {
     bool saw_memory{false};
     bool saw_gpus{false};
     bool saw_walltime{false};
+    bool saw_queue{false};
 };
 
 [[nodiscard]] std::string_view trim(std::string_view value) {
@@ -422,6 +423,14 @@ parse_directive(ParserState& state, std::string_view directive,
 
         if (option == "-N") {
             state.spec.name = *value;
+        } else if (option == "-q") {
+            if (state.saw_queue) {
+                return std::unexpected{
+                    "pbs queue was specified more than once"};
+            }
+
+            state.spec.queue = *value;
+            state.saw_queue = true;
         } else if (option == "-l") {
             if (auto parsed = parse_resources(state, *value); !parsed) {
                 return parsed;
@@ -558,6 +567,11 @@ parse_pbs_script(const std::filesystem::path& script_path,
         state.spec.name.find('\0') != std::string::npos) {
         return std::unexpected{
             "pbs job name cannot be empty or contain a slash or null"};
+    }
+    if (state.spec.queue.empty() ||
+        state.spec.queue.find('\0') != std::string::npos) {
+        return std::unexpected{
+            "pbs queue name cannot be empty or contain null"};
     }
 
     auto working_directory =

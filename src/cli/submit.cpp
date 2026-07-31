@@ -117,6 +117,7 @@ parse_submit_command(std::span<const std::string_view> arguments) {
     bool found_command = false;
     bool found_script = false;
     bool used_native_job_option = false;
+    std::optional<std::string> requested_queue;
 
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto option = arguments[index];
@@ -196,6 +197,14 @@ parse_submit_command(std::span<const std::string_view> arguments) {
 
         if (option == "--socket") {
             command.socket_path = *value;
+        } else if (option == "--queue" || option == "-q") {
+            if (requested_queue) {
+                return std::unexpected{"queue was specified more than once"};
+            }
+
+            // keep this outside used_native_job_option: qsub -q and native
+            // command-line overrides both need to work in front of a script
+            requested_queue = *value;
         } else if (option == "--name") {
             used_native_job_option = true;
             command.spec.name = *value;
@@ -280,6 +289,14 @@ parse_submit_command(std::span<const std::string_view> arguments) {
         return std::unexpected{"--cpus must be greater than zero"};
     }
 
+    if (requested_queue) {
+        command.spec.queue = std::move(*requested_queue);
+    }
+    if (command.spec.queue.empty() ||
+        command.spec.queue.find('\0') != std::string::npos) {
+        return std::unexpected{"queue name cannot be empty or contain null"};
+    }
+
     if (command.spec.name.empty()) {
         // /bin/python becoming "python" is useful enough for the native default
         // and still leaves --name for jobs that deserve an actual label
@@ -312,6 +329,7 @@ std::string_view submit_usage() {
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --queue NAME, -q NAME  submit to this queue (default: default)
   --name NAME            job name (default: executable filename)
   --cpus N               requested cpus (default: 1)
   --memory-mb N          requested memory in mb (default: 0)
@@ -327,7 +345,7 @@ options:
   -h, --help             show this help
 
 basic #PBS options:
-  -N, -l, -d, -V, -v, -o, and -e
+  -N, -q, -l, -d, -V, -v, -o, and -e
 
 native scripts:
   .rlbs and .rlbs.sh files use #RLBS key = value directives

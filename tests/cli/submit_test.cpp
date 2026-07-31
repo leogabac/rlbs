@@ -28,6 +28,8 @@ void test_minimal_submit() {
                "minimal submit uses the default socket");
         expect(command->spec.name == "echo",
                "minimal submit derives its job name");
+        expect(command->spec.queue == "default",
+               "minimal submit uses the default queue");
         expect(command->spec.resources.cpus == 1,
                "minimal submit requests one cpu");
         expect(command->spec.argv ==
@@ -40,9 +42,11 @@ void test_minimal_submit() {
 }
 
 void test_full_submit() {
-    const std::array<std::string_view, 26> arguments{
+    const std::array<std::string_view, 28> arguments{
         "--socket",
         "/tmp/custom.sock",
+        "--queue",
+        "short",
         "--name",
         "full",
         "--cpus",
@@ -76,6 +80,7 @@ void test_full_submit() {
         expect(command->socket_path == "/tmp/custom.sock",
                "full submit keeps the socket");
         expect(command->spec.name == "full", "full submit keeps the name");
+        expect(command->spec.queue == "short", "full submit keeps the queue");
         expect(command->spec.resources.cpus == 4, "full submit keeps cpus");
         expect(command->spec.resources.memory_mb == 8192,
                "full submit keeps memory");
@@ -120,6 +125,17 @@ void test_bad_submissions() {
         "--walltime", "01:99:00", "--", "/bin/true"};
     expect(!rlbs::parse_submit_command(bad_walltime),
            "invalid walltime is rejected");
+
+    const std::array<std::string_view, 4> pbs_queue_alias{
+        "-q", "short", "--", "/bin/true"};
+    const auto aliased = rlbs::parse_submit_command(pbs_queue_alias);
+    expect(aliased && aliased->spec.queue == "short",
+           "pbs queue alias selects a queue");
+
+    const std::array<std::string_view, 4> empty_queue{
+        "--queue", "", "--", "/bin/true"};
+    expect(!rlbs::parse_submit_command(empty_queue),
+           "empty queue name is rejected");
 }
 
 } // namespace

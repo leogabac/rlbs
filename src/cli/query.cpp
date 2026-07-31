@@ -265,6 +265,7 @@ parse_nodes_command(std::span<const std::string_view> arguments) {
 std::string format_queue(const std::vector<JobSummary>& jobs) {
     std::ostringstream output;
     output << std::left << std::setw(8) << "job id" << std::setw(12) << "state"
+           << std::setw(14) << "queue"
            << std::right << std::setw(6) << "cpus" << std::setw(12)
            << "memory mb" << std::setw(6) << "gpus" << "  " << std::left
            << std::setw(12) << "time" << std::setw(12) << "walltime"
@@ -272,7 +273,8 @@ std::string format_queue(const std::vector<JobSummary>& jobs) {
 
     for (const auto& job : jobs) {
         output << std::left << std::setw(8) << job.id << std::setw(12)
-               << state_name(job.state) << std::right << std::setw(6)
+               << state_name(job.state) << std::setw(14) << job.queue
+               << std::right << std::setw(6)
                << job.resources.cpus << std::setw(12) << job.resources.memory_mb
                << std::setw(6) << job.resources.gpus << "  " << std::left
                << std::setw(12)
@@ -292,6 +294,7 @@ std::string format_status(const Job& job) {
     output << "job id: " << job.id << '\n'
            << "name: " << job.spec.name << '\n'
            << "state: " << state_name(job.state) << '\n'
+           << "queue: " << job.spec.queue << '\n'
            << "queue sequence: " << job.queue_sequence << '\n'
            << "node: " << job.assigned_node.value_or("-") << '\n'
            << "cpus: " << job.spec.resources.cpus << '\n'

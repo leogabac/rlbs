@@ -84,6 +84,7 @@ void test_queue_format() {
         {
             .id = 7,
             .name = "waiting job",
+            .queue = "short",
             .state = rlbs::JobState::pending,
             .resources = {.cpus = 2, .memory_mb = 4096, .gpus = 0},
             .assigned_node = std::nullopt,
@@ -93,6 +94,7 @@ void test_queue_format() {
         {
             .id = 8,
             .name = "running job",
+            .queue = "long",
             .state = rlbs::JobState::running,
             .resources = {.cpus = 4, .memory_mb = 8192, .gpus = 1},
             .assigned_node = "head",
@@ -106,6 +108,7 @@ void test_queue_format() {
     expect(output.contains("7       pending"), "queue prints pending jobs");
     expect(output.contains("8       running"), "queue prints running jobs");
     expect(output.contains("head"), "queue prints assigned nodes");
+    expect(output.contains("short"), "queue prints queue names");
     expect(output.contains("running job"), "queue prints job names");
     expect(output.contains("00:00:17"), "queue prints execution time");
     expect(output.contains("00:10:00"), "queue prints walltime");
@@ -127,6 +130,7 @@ void test_status_format() {
                 .stderr_path = std::nullopt,
                 .append_output = true,
                 .walltime = std::chrono::seconds{90},
+                .queue = "short",
             },
         .state = rlbs::JobState::completed,
         .assigned_node = "head",
@@ -142,6 +146,7 @@ void test_status_format() {
 
     expect(output.contains("job id: 9"), "status prints the job id");
     expect(output.contains("state: completed"), "status prints the state");
+    expect(output.contains("queue: short"), "status prints the queue");
     expect(output.contains("node: head"), "status prints the node");
     expect(output.contains("command: \"/bin/sh\" \"-c\""),
            "status keeps command arguments separate");

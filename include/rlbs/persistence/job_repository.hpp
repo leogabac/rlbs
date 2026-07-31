@@ -15,6 +15,7 @@ namespace rlbs {
 
 enum class RepositoryOperation {
     begin_transaction,
+    validate_queue,
     choose_queue_sequence,
     insert_job,
     insert_argument,

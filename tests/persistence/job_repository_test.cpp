@@ -1,5 +1,6 @@
 #include <rlbs/persistence/database.hpp>
 #include <rlbs/persistence/job_repository.hpp>
+#include <rlbs/persistence/queue_repository.hpp>
 
 #include <filesystem>
 #include <iostream>
@@ -71,6 +72,7 @@ class TemporaryDirectory {
         .stderr_path = std::nullopt,
         .append_output = true,
         .walltime = std::chrono::seconds{90},
+        .queue = "default",
     };
 }
 
@@ -111,12 +113,14 @@ void expect_same_spec(const rlbs::JobSpec& actual,
            "output mode survives persistence");
     expect(actual.walltime == expected.walltime,
            "walltime survives persistence");
+    expect(actual.queue == expected.queue, "queue survives persistence");
 }
 
 void test_submit_find_and_reopen() {
     TemporaryDirectory temporary;
     const auto path = temporary.path() / "rlbs.db";
-    const auto spec = example_spec("round trip");
+    auto spec = example_spec("round trip");
+    spec.queue = "short";
     rlbs::JobId submitted_id = 0;
 
     {
@@ -126,6 +130,16 @@ void test_submit_find_and_reopen() {
         if (!database) {
             return;
         }
+
+        rlbs::QueueRepository queues{*database};
+        const auto added = queues.add({
+            .name = "short",
+            .priority = 100,
+            .enabled = true,
+            .started = true,
+            .max_running = std::nullopt,
+        });
+        expect(added.has_value(), "job queue fixture is added");
 
         rlbs::JobRepository repository{*database};
         const auto submitted = repository.submit(spec);
@@ -274,6 +288,29 @@ void test_failed_submission_rolls_back() {
     expect(valid.has_value(), "repository still works after rollback");
     expect(valid && valid->queue_sequence == 1,
            "rolled back job does not consume a queue position");
+}
+
+void test_rejects_unknown_queue() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "unknown-queue.db");
+
+    expect(database.has_value(), "unknown queue database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    auto spec = example_spec("wrong queue");
+    spec.queue = "missing";
+    const auto rejected = repository.submit(spec);
+
+    expect(!rejected, "job cannot enter an unknown queue");
+    expect(!rejected &&
+               rejected.error().operation ==
+                   rlbs::RepositoryOperation::validate_queue,
+           "unknown queue failure identifies queue validation");
 }
 
 void test_transitions_store_results_and_events() {
@@ -486,6 +523,7 @@ int main() {
     test_pending_jobs_keep_fifo_order();
     test_all_jobs_include_finished_jobs();
     test_failed_submission_rolls_back();
+    test_rejects_unknown_queue();
     test_transitions_store_results_and_events();
     test_invalid_transition_changes_nothing();
     test_event_failure_rolls_back_state();

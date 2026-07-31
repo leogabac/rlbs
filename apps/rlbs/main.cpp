@@ -53,9 +53,9 @@ enum class CommandStyle {
 }
 
 [[nodiscard]] std::string_view qsub_usage() {
-    return R"usage(usage: qsub [--socket PATH] JOB.pbs
+    return R"usage(usage: qsub [--socket PATH] [-q QUEUE] JOB.pbs
 
-the supported #PBS directives are -N, -l, -d, -V, -v, -o, and -e.
+the supported #PBS directives are -N, -q, -l, -d, -V, -v, -o, and -e.
 walltime uses -l walltime=HH:MM:SS.
 )usage";
 }
