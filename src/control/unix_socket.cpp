@@ -446,7 +446,9 @@ ControlServer::~ControlServer() { close(); }
 std::expected<ControlServer, ControlSocketError>
 ControlServer::listen(const std::filesystem::path& path,
                       JobRepository& repository, QueueRepository& queues,
-                      LocalCoordinator& coordinator, Logger* logger) {
+                      LocalCoordinator& coordinator,
+                      std::optional<std::uint32_t> socket_group_id,
+                      Logger* logger) {
     // order matters: validate the address, deal with a stale name, create the
     // fd, bind the name, then listen. later failures undo the filesystem entry
     // so the next startup is not punished for this one
@@ -479,13 +481,34 @@ ControlServer::listen(const std::filesystem::path& path,
             error(ControlSocketOperation::bind_socket, errno, path.string())};
     }
 
-    // owner and group may submit; everyone else stays out. actual auth can grow
-    // later without starting from a world-writable scheduler socket
+    if (socket_group_id) {
+        const auto group_id = static_cast<gid_t>(*socket_group_id);
+
+        if (static_cast<std::uint32_t>(group_id) != *socket_group_id) {
+            static_cast<void>(::unlink(path.c_str()));
+            return std::unexpected{
+                error(ControlSocketOperation::configure_socket, EOVERFLOW,
+                      "control socket group id does not fit this system")};
+        }
+
+        // uid -1 means "leave the owner alone". lchown deliberately refuses to
+        // follow a surprise symlink if somebody somehow races the socket path.
+        if (::lchown(path.c_str(), static_cast<uid_t>(-1), group_id) < 0) {
+            const int group_error = errno;
+            static_cast<void>(::unlink(path.c_str()));
+            return std::unexpected{
+                error(ControlSocketOperation::configure_socket, group_error,
+                      "could not set control socket group")};
+        }
+    }
+
+    // owner and the selected group may connect; everyone else stays out. keep
+    // this fixed instead of adding a tempting "just make it 0666" switch.
     if (::chmod(path.c_str(), 0660) < 0) {
         const int permission_error = errno;
         static_cast<void>(::unlink(path.c_str()));
         return std::unexpected{
-            error(ControlSocketOperation::bind_socket, permission_error,
+            error(ControlSocketOperation::configure_socket, permission_error,
                   "could not set control socket permissions")};
     }
 

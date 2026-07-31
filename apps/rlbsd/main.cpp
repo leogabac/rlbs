@@ -52,6 +52,19 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    std::optional<std::uint32_t> socket_group_id;
+
+    if (config->socket_group) {
+        auto resolved = rlbs::resolve_socket_group(*config->socket_group);
+
+        if (!resolved) {
+            logger.error("config", resolved.error());
+            return 1;
+        }
+
+        socket_group_id = *resolved;
+    }
+
     auto database = rlbs::SqliteDatabase::open(config->database_path);
 
     if (!database) {
@@ -74,7 +87,8 @@ int main(int argc, char* argv[]) {
         &logger,
     };
     auto control = rlbs::ControlServer::listen(
-        config->socket_path, repository, queues, coordinator, &logger);
+        config->socket_path, repository, queues, coordinator, socket_group_id,
+        &logger);
 
     if (!control) {
         std::string message = "could not open " + config->socket_path.string() +
@@ -97,6 +111,8 @@ int main(int argc, char* argv[]) {
             << " node=" << config->node_id
             << " database=" << config->database_path
             << " socket=" << config->socket_path
+            << " socket_group="
+            << config->socket_group.value_or("(daemon group)")
             << " spool=" << config->spool_path
             << " cpus=" << config->capacity.cpus
             << " memory_mb=" << config->capacity.memory_mb

@@ -11,10 +11,13 @@ rlbs_socket="${RLBS_SOCKET:-/tmp/rlbs.sock}"
 printf 'current client uid: %s\n' "$(id -u)"
 "$rlbs_bin" queue --socket "$rlbs_socket"
 
-# a real two-user check needs both users to reach the socket. rlbsd creates it
-# as 0660, so put the users in its group (or let the service manager assign the
-# socket group) before trying this. these are commented because nobody wants an
-# example script unexpectedly creating users or invoking sudo.
+# a real two-user check needs both users in one scheduler group. start the
+# daemon with --socket-group rlbs-users; it keeps the socket at 0660 and changes
+# only its group owner. these are commented because nobody wants an example
+# script unexpectedly creating users or invoking sudo.
+#
+# sudo ./build/rlbsd --database /var/lib/rlbs/rlbs.db \
+#     --socket /run/rlbs/rlbs.sock --socket-group rlbs-users --cpus 8
 #
 # sudo -u alice "$rlbs_bin" submit --socket "$rlbs_socket" \
 #     --name alice-job -- /bin/sh -c 'sleep 60'

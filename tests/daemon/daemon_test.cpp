@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include <grp.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -201,6 +203,8 @@ void test_config_parser() {
         "head",
         "--socket",
         "/tmp/custom.sock",
+        "--socket-group",
+        "rlbs-users",
         "--spool",
         "/tmp/custom-spool",
         "--cpus",
@@ -227,6 +231,9 @@ void test_config_parser() {
                "database path parses");
         expect(parsed->node_id == "head", "node id parses");
         expect(parsed->socket_path == "/tmp/custom.sock", "socket path parses");
+        expect(parsed->socket_group &&
+                   *parsed->socket_group == "rlbs-users",
+               "socket group parses");
         expect(parsed->spool_path == "/tmp/custom-spool",
                "spool path parses");
         expect(parsed->capacity.cpus == 12, "cpu capacity parses");
@@ -251,6 +258,21 @@ void test_config_parser() {
     const std::array<std::string_view, 2> unknown{"--mystery", "1"};
     expect(!rlbs::parse_daemon_config(unknown),
            "unknown daemon option is rejected");
+
+    const group* current_group = ::getgrgid(::getegid());
+    expect(current_group != nullptr, "current unix group can be inspected");
+
+    if (current_group != nullptr) {
+        const std::string group_name{current_group->gr_name};
+        const auto resolved = rlbs::resolve_socket_group(group_name);
+        expect(resolved &&
+                   *resolved == static_cast<std::uint32_t>(::getegid()),
+               "socket group name resolves to its gid");
+    }
+
+    const auto missing_group = rlbs::resolve_socket_group(
+        "__rlbs_group_that_should_not_exist_" + std::to_string(::getpid()));
+    expect(!missing_group, "unknown socket group is rejected");
 }
 
 void test_real_cli_submits_to_daemon(
@@ -263,9 +285,12 @@ void test_real_cli_submits_to_daemon(
     const auto qsub_executable = executable_directory / "qsub";
     const auto qstat_executable = executable_directory / "qstat";
     const auto qdel_executable = executable_directory / "qdel";
+    const group* current_group = ::getgrgid(::getegid());
     auto database = rlbs::SqliteDatabase::open(database_path);
 
     expect(database.has_value(), "daemon integration database opens");
+    expect(current_group != nullptr,
+           "daemon integration resolves its current group");
     expect(std::filesystem::is_symlink(qsub_executable),
            "qsub is a symlink to the native cli");
     expect(std::filesystem::is_symlink(qstat_executable),
@@ -273,18 +298,20 @@ void test_real_cli_submits_to_daemon(
     expect(std::filesystem::is_symlink(qdel_executable),
            "qdel is a symlink to the native cli");
 
-    if (!database) {
+    if (!database || current_group == nullptr) {
         return;
     }
 
+    const std::string socket_group{current_group->gr_name};
     rlbs::JobRepository repository{*database};
     const pid_t child = ::fork();
 
     if (child == 0) {
         ::execl(daemon_executable.c_str(), daemon_executable.c_str(),
                 "--database", database_path.c_str(), "--socket",
-                socket_path.c_str(), "--cpus", "2", "--memory-mb", "4096",
-                "--tick-ms", "5", static_cast<char*>(nullptr));
+                socket_path.c_str(), "--socket-group", socket_group.c_str(),
+                "--cpus", "2", "--memory-mb", "4096", "--tick-ms", "5",
+                static_cast<char*>(nullptr));
         ::_exit(127);
     }
 
@@ -311,6 +338,15 @@ void test_real_cli_submits_to_daemon(
     if (!socket_ready) {
         return;
     }
+
+    struct stat socket_status{};
+    expect(::lstat(socket_path.c_str(), &socket_status) == 0,
+           "control socket metadata can be inspected");
+    expect(static_cast<std::uint32_t>(socket_status.st_gid) ==
+               static_cast<std::uint32_t>(::getegid()),
+           "configured group owns the control socket");
+    expect((socket_status.st_mode & 0777) == 0660,
+           "control socket stays owner-and-group only");
 
     const auto add_short = run_cli_command(
         cli_executable, {"queues", "add", "short", "--priority", "100",

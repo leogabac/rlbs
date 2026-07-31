@@ -1,10 +1,14 @@
+// parsing stays boring; system account lookup happens in a separate helper so
+// a typo in --socket-group fails before rlbsd creates anything.
 #include <rlbs/daemon/config.hpp>
 
 #include <charconv>
 #include <cstdint>
+#include <grp.h>
 #include <limits>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace rlbs {
 namespace {
@@ -59,6 +63,8 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
             config.database_path = *value;
         } else if (option == "--socket") {
             config.socket_path = *value;
+        } else if (option == "--socket-group") {
+            config.socket_group = std::string{*value};
         } else if (option == "--spool") {
             config.spool_path = *value;
         } else if (option == "--node-id") {
@@ -126,6 +132,9 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
     if (config.socket_path.empty()) {
         return std::unexpected{"--socket cannot be empty"};
     }
+    if (config.socket_group && config.socket_group->empty()) {
+        return std::unexpected{"--socket-group cannot be empty"};
+    }
     if (config.spool_path.empty()) {
         auto database_parent = config.database_path.parent_path();
         config.spool_path =
@@ -147,12 +156,51 @@ parse_daemon_config(std::span<const std::string_view> arguments) {
     return config;
 }
 
+std::expected<std::uint32_t, std::string>
+resolve_socket_group(std::string_view name) {
+    // getgrnam_r writes pointers into caller-owned storage. keep growing that
+    // storage on erange instead of guessing that every nss backend is tiny.
+    std::vector<char> buffer(16 * 1024);
+    std::string owned_name{name};
+
+    for (;;) {
+        group record{};
+        group* found = nullptr;
+        const int result =
+            ::getgrnam_r(owned_name.c_str(), &record, buffer.data(),
+                         buffer.size(), &found);
+
+        if (result == 0 && found != nullptr) {
+            const auto group_id = static_cast<std::uint32_t>(found->gr_gid);
+
+            if (static_cast<gid_t>(group_id) != found->gr_gid) {
+                return std::unexpected{"socket group id does not fit"};
+            }
+
+            return group_id;
+        }
+        if (result == 0) {
+            return std::unexpected{"socket group was not found: " +
+                                   owned_name};
+        }
+        if (result != ERANGE ||
+            buffer.size() >= static_cast<std::size_t>(1024 * 1024)) {
+            return std::unexpected{"could not resolve socket group " +
+                                   owned_name + ": " +
+                                   std::generic_category().message(result)};
+        }
+
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
 std::string_view daemon_usage() {
     return R"usage(usage: rlbsd [options]
 
 options:
   --database PATH           sqlite database path (default: rlbs.db)
   --socket PATH             unix control socket (default: /tmp/rlbs.sock)
+  --socket-group GROUP      group allowed to connect (default: daemon group)
   --spool PATH              execution output spool (default: beside database)
   --node-id ID              local node name (default: local)
   --cpus N                  total local cpu capacity (default: 1)

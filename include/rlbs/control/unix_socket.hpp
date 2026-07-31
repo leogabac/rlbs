@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <rlbs/control/authorization.hpp>
@@ -23,6 +24,7 @@ enum class ControlSocketOperation {
     inspect_peer,
     create_socket,
     bind_socket,
+    configure_socket,
     listen_socket,
     accept_client,
     connect_server,
@@ -48,6 +50,7 @@ class ControlServer {
     [[nodiscard]] static std::expected<ControlServer, ControlSocketError>
     listen(const std::filesystem::path& path, JobRepository& repository,
            QueueRepository& queues, LocalCoordinator& coordinator,
+           std::optional<std::uint32_t> socket_group_id = std::nullopt,
            Logger* logger = nullptr);
 
     ControlServer(const ControlServer&) = delete;
