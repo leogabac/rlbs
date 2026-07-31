@@ -15,11 +15,13 @@
 #include <rlbs/local/runtime_environment.hpp>
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
+#include <rlbs/persistence/queue_repository.hpp>
 
 namespace rlbs {
 
 enum class LocalCoordinatorOperation {
-    load_pending,
+    load_jobs,
+    load_queues,
     persist_assignment,
     persist_starting,
     prepare_runtime_environment,
@@ -37,7 +39,7 @@ enum class LocalCoordinatorOperation {
 
 struct LocalCoordinatorError {
     LocalCoordinatorOperation operation{
-        LocalCoordinatorOperation::load_pending};
+        LocalCoordinatorOperation::load_jobs};
     std::string message;
     std::optional<RepositoryError> repository_error;
     std::optional<ProcessError> process_error;
@@ -49,7 +51,8 @@ struct LocalCoordinatorError {
 // will eventually own one and keep calling tick from its event loop
 class LocalCoordinator {
   public:
-    LocalCoordinator(JobRepository& repository, Node local_node,
+    LocalCoordinator(JobRepository& repository, QueueRepository& queues,
+                     Node local_node,
                      const SchedulingPolicy& scheduler,
                      std::filesystem::path spool_directory,
                      Logger* logger = nullptr);
@@ -84,6 +87,7 @@ class LocalCoordinator {
     release(const ResourceAllocation& allocation);
 
     JobRepository& repository_;
+    QueueRepository& queues_;
     const SchedulingPolicy& scheduler_;
     LocalProcessRunner runner_;
     Logger* logger_{nullptr};

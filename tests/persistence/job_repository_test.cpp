@@ -250,12 +250,19 @@ void test_all_jobs_include_finished_jobs() {
     const auto jobs = repository.all();
     expect(jobs && jobs->size() == 2,
            "all jobs includes terminal and pending jobs");
+    const auto schedulable = repository.schedulable();
+    expect(schedulable && schedulable->size() == 1,
+           "scheduler query leaves finished history behind");
 
     if (jobs && jobs->size() == 2) {
         expect((*jobs)[0].state == rlbs::JobState::cancelled,
                "all jobs keeps the finished job");
         expect((*jobs)[1].state == rlbs::JobState::pending,
                "all jobs keeps the waiting job");
+    }
+    if (schedulable && schedulable->size() == 1) {
+        expect((*schedulable)[0].state == rlbs::JobState::pending,
+               "scheduler query keeps the waiting job");
     }
 }
 

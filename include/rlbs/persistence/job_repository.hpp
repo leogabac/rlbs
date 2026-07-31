@@ -66,6 +66,9 @@ class JobRepository {
     [[nodiscard]] std::expected<std::vector<Job>, RepositoryError>
     pending() const;
 
+    [[nodiscard]] std::expected<std::vector<Job>, RepositoryError>
+    schedulable() const;
+
     [[nodiscard]] std::expected<std::vector<Job>, RepositoryError> all() const;
 
     [[nodiscard]] std::expected<Job, RepositoryError>

@@ -16,6 +16,7 @@
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/database.hpp>
 #include <rlbs/persistence/job_repository.hpp>
+#include <rlbs/persistence/queue_repository.hpp>
 
 namespace {
 
@@ -61,10 +62,12 @@ int main(int argc, char* argv[]) {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     rlbs::FirstFitScheduler scheduler;
     rlbs::Node local_node{config->node_id, config->capacity, config->reserved};
     rlbs::LocalCoordinator coordinator{
         repository,
+        queues,
         std::move(local_node),
         scheduler,
         config->spool_path,

@@ -1026,6 +1026,57 @@ JobRepository::pending() const {
     return jobs;
 }
 
+std::expected<std::vector<Job>, RepositoryError>
+JobRepository::schedulable() const {
+    auto statement = prepare(
+        connection_,
+        "SELECT id FROM jobs "
+        "WHERE state IN ('pending', 'assigned', 'starting', 'running') "
+        "ORDER BY queue_sequence, id;",
+        RepositoryOperation::read_job);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    std::vector<JobId> ids;
+    int result = SQLITE_ROW;
+
+    while ((result = sqlite3_step(statement->get())) == SQLITE_ROW) {
+        ids.push_back(
+            static_cast<JobId>(sqlite3_column_int64(statement->get(), 0)));
+    }
+
+    if (result != SQLITE_DONE) {
+        return std::unexpected{
+            error(connection_, RepositoryOperation::read_job, result)};
+    }
+
+    std::vector<Job> jobs;
+    jobs.reserve(ids.size());
+
+    for (const auto id : ids) {
+        auto job = find(id);
+
+        if (!job) {
+            return std::unexpected{std::move(job.error())};
+        }
+
+        // one connection produced these ids and loads them immediately, so a
+        // missing row here means somebody edited behind the repository's back
+        if (!*job) {
+            return std::unexpected{
+                error(connection_, RepositoryOperation::read_job,
+                      SQLITE_CORRUPT,
+                      "schedulable job disappeared while loading")};
+        }
+
+        jobs.push_back(std::move(**job));
+    }
+
+    return jobs;
+}
+
 std::expected<std::vector<Job>, RepositoryError> JobRepository::all() const {
     auto statement =
         prepare(connection_, "SELECT id FROM jobs ORDER BY queue_sequence, id;",

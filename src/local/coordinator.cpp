@@ -111,11 +111,13 @@ process_spec(const Job& job,
 
 } // namespace
 
-LocalCoordinator::LocalCoordinator(JobRepository& repository, Node local_node,
+LocalCoordinator::LocalCoordinator(JobRepository& repository,
+                                   QueueRepository& queues, Node local_node,
                                    const SchedulingPolicy& scheduler,
                                    std::filesystem::path spool_directory,
                                    Logger* logger)
-    : repository_{repository}, scheduler_{scheduler}, logger_{logger},
+    : repository_{repository}, queues_{queues}, scheduler_{scheduler},
+      logger_{logger},
       spool_directory_{std::move(spool_directory)} {
     nodes_.push_back(std::move(local_node));
 }
@@ -371,30 +373,58 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
 }
 
 std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
-    auto pending = repository_.pending();
+    auto jobs = repository_.schedulable();
 
-    if (!pending) {
+    if (!jobs) {
         return std::unexpected{
-            repository_failure(LocalCoordinatorOperation::load_pending,
-                               std::move(pending.error()))};
+            repository_failure(LocalCoordinatorOperation::load_jobs,
+                               std::move(jobs.error()))};
     }
 
-    if (pending->empty()) {
+    if (jobs->empty()) {
         return {};
     }
 
-    // only hand the oldest job to the scheduler on each tick. rlbsd will tick
-    // continuously, and this keeps one broken launch from leaving a pile of
-    // allocations we now have to unwind backward
-    pending->resize(1);
-    auto assignments = scheduler_.schedule(*pending, nodes_);
+    auto queues = queues_.all();
+
+    if (!queues) {
+        return std::unexpected{LocalCoordinatorError{
+            .operation = LocalCoordinatorOperation::load_queues,
+            .message = queues.error().message,
+            .repository_error = std::nullopt,
+            .process_error = std::nullopt,
+            .runtime_environment_error = std::nullopt,
+            .output_spool_error = std::nullopt,
+        }};
+    }
+
+    // launch one job per tick. if setup fails, there is only one allocation to
+    // unwind instead of a small resource-accounting crime scene
+    auto assignments = scheduler_.schedule(*jobs, nodes_, *queues, 1);
 
     if (assignments.empty()) {
         return {};
     }
 
-    auto& job = pending->front();
     auto& assignment = assignments.front();
+    const auto selected =
+        std::ranges::find(*jobs, assignment.job_id, &Job::id);
+
+    // the scheduler just read this vector, so losing the selected job here
+    // would mean the policy returned an id it never received
+    if (selected == jobs->end()) {
+        static_cast<void>(release(assignment.allocation));
+        return std::unexpected{LocalCoordinatorError{
+            .operation = LocalCoordinatorOperation::persist_assignment,
+            .message = "scheduler selected an unknown job",
+            .repository_error = std::nullopt,
+            .process_error = std::nullopt,
+            .runtime_environment_error = std::nullopt,
+            .output_spool_error = std::nullopt,
+        }};
+    }
+
+    auto& job = *selected;
 
     auto assigned = repository_.transition(
         job.id, {
@@ -414,6 +444,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
     if (logger_ != nullptr) {
         std::ostringstream message;
         message << "job " << job.id << " assigned to " << assignment.node_id
+                << " queue=" << job.spec.queue
                 << " cpus=" << assignment.allocation.resources.cpus
                 << " memory_mb=" << assignment.allocation.resources.memory_mb
                 << " gpus=" << assignment.allocation.resources.gpus;

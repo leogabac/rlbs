@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
+#include <rlbs/core/batch_queue.hpp>
 #include <rlbs/core/job.hpp>
 #include <rlbs/core/node.hpp>
 
@@ -18,13 +20,17 @@ class SchedulingPolicy {
     virtual ~SchedulingPolicy() = default;
 
     [[nodiscard]] virtual std::vector<Assignment>
-    schedule(std::vector<Job>& jobs, std::vector<Node>& nodes) const = 0;
+    schedule(std::vector<Job>& jobs, std::vector<Node>& nodes,
+             const std::vector<BatchQueue>& queues,
+             std::size_t max_assignments) const = 0;
 };
 
 class FirstFitScheduler final : public SchedulingPolicy {
   public:
     [[nodiscard]] std::vector<Assignment>
-    schedule(std::vector<Job>& jobs, std::vector<Node>& nodes) const override;
+    schedule(std::vector<Job>& jobs, std::vector<Node>& nodes,
+             const std::vector<BatchQueue>& queues,
+             std::size_t max_assignments) const override;
 };
 
 } // namespace rlbs

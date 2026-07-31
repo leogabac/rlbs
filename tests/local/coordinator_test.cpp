@@ -128,6 +128,7 @@ void test_queued_job_runs_to_completion() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(local_spec(
         temporary.path(), {"/bin/sh", "-c", "printf 'scheduled\\n'; exit 7"}));
 
@@ -139,7 +140,8 @@ void test_queued_job_runs_to_completion() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     const auto first_tick = coordinator.tick();
     expect(first_tick.has_value(), "first coordinator tick succeeds");
@@ -183,6 +185,7 @@ void test_job_waits_when_resources_do_not_fit() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     auto spec = local_spec(temporary.path(), {"/bin/true"});
     spec.resources.cpus = 3;
     const auto submitted = repository.submit(spec);
@@ -194,7 +197,8 @@ void test_job_waits_when_resources_do_not_fit() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "waiting tick succeeds");
     expect(coordinator.active_job_count() == 0,
@@ -219,6 +223,7 @@ void test_launch_failure_marks_job_failed() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
         local_spec(temporary.path(), {"/definitely/not/an/rlbs/executable"}));
 
@@ -229,7 +234,8 @@ void test_launch_failure_marks_job_failed() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(),
            "bad executable fails the job without breaking the tick");
@@ -264,6 +270,7 @@ void test_pending_job_can_be_cancelled() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
         local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
 
@@ -274,7 +281,8 @@ void test_pending_job_can_be_cancelled() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.cancel(submitted->id).has_value(),
            "pending job cancellation succeeds");
@@ -302,6 +310,7 @@ void test_running_job_can_be_cancelled() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     const auto submitted = repository.submit(
         local_spec(temporary.path(), {"/bin/sh", "-c", "sleep 30"}));
 
@@ -312,7 +321,8 @@ void test_running_job_can_be_cancelled() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "cancellation job starts");
     expect(coordinator.active_job_count() == 1,
@@ -346,6 +356,7 @@ void test_pbs_runtime_environment() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     auto spec = local_spec(
         temporary.path(),
         {"/bin/sh", "-c",
@@ -369,7 +380,8 @@ void test_pbs_runtime_environment() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "pbs runtime job starts");
     expect(run_until_idle(coordinator), "pbs runtime job finishes");
@@ -410,6 +422,7 @@ void test_walltime_stops_running_job() {
     }
 
     rlbs::JobRepository repository{*database};
+    rlbs::QueueRepository queues{*database};
     auto spec = local_spec(
         temporary.path(),
         {"/bin/sh", "-c", "printf 'before timeout\\n'; sleep 30"});
@@ -423,7 +436,8 @@ void test_walltime_stops_running_job() {
 
     rlbs::FirstFitScheduler scheduler;
     rlbs::LocalCoordinator coordinator{
-        repository, local_node(), scheduler, temporary.path() / "spool"};
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
 
     expect(coordinator.tick().has_value(), "walltime job starts");
     expect(run_until_idle(coordinator), "walltime job is eventually stopped");
@@ -443,6 +457,104 @@ void test_walltime_stops_running_job() {
            "walltime job returns its cpu allocation");
 }
 
+void test_coordinator_enforces_queue_running_limit() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "queue-policy.db");
+
+    expect(database.has_value(), "queue policy database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::QueueRepository queues{*database};
+    const auto limited_queue = queues.add({
+        .name = "limited",
+        .priority = 100,
+        .enabled = true,
+        .started = true,
+        .max_running = 1,
+    });
+    const auto other_queue = queues.add({
+        .name = "other",
+        .priority = 10,
+        .enabled = true,
+        .started = true,
+        .max_running = std::nullopt,
+    });
+    expect(limited_queue && other_queue, "queue policy fixtures are added");
+
+    if (!limited_queue || !other_queue) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    auto first_spec = local_spec(
+        temporary.path(), {"/bin/sh", "-c", "sleep 0.2"});
+    first_spec.name = "limited first";
+    first_spec.resources.cpus = 1;
+    first_spec.stdout_path = "limited-first.out";
+    first_spec.stderr_path = "limited-first.err";
+    first_spec.queue = "limited";
+
+    auto second_spec =
+        local_spec(temporary.path(), {"/bin/sh", "-c", "printf second"});
+    second_spec.name = "limited second";
+    second_spec.resources.cpus = 1;
+    second_spec.stdout_path = "limited-second.out";
+    second_spec.stderr_path = "limited-second.err";
+    second_spec.queue = "limited";
+
+    auto other_spec =
+        local_spec(temporary.path(), {"/bin/sh", "-c", "printf other"});
+    other_spec.name = "other";
+    other_spec.resources.cpus = 1;
+    other_spec.stdout_path = "other.out";
+    other_spec.stderr_path = "other.err";
+    other_spec.queue = "other";
+
+    const auto first = repository.submit(first_spec);
+    const auto second = repository.submit(second_spec);
+    const auto other = repository.submit(other_spec);
+    expect(first && second && other, "queue policy jobs submit");
+
+    if (!first || !second || !other) {
+        return;
+    }
+
+    rlbs::FirstFitScheduler scheduler;
+    rlbs::LocalCoordinator coordinator{
+        repository, queues, local_node(), scheduler,
+        temporary.path() / "spool"};
+
+    expect(coordinator.tick().has_value(),
+           "first limited queue job starts");
+    expect(coordinator.tick().has_value(),
+           "another queue gets the next scheduling turn");
+
+    const auto first_loaded = repository.find(first->id);
+    const auto second_loaded = repository.find(second->id);
+    const auto other_loaded = repository.find(other->id);
+    expect(first_loaded && *first_loaded &&
+               (*first_loaded)->state == rlbs::JobState::running,
+           "first limited job remains active");
+    expect(second_loaded && *second_loaded &&
+               (*second_loaded)->state == rlbs::JobState::pending,
+           "second limited job waits at max_running");
+    expect(other_loaded && *other_loaded &&
+               (*other_loaded)->state == rlbs::JobState::running,
+           "lower-priority queue runs while limited queue is full");
+
+    expect(run_until_idle(coordinator),
+           "queue policy jobs eventually finish");
+
+    const auto second_finished = repository.find(second->id);
+    expect(second_finished && *second_finished &&
+               (*second_finished)->state == rlbs::JobState::completed,
+           "waiting limited job starts after its queue slot opens");
+}
+
 } // namespace
 
 int main() {
@@ -453,6 +565,7 @@ int main() {
     test_running_job_can_be_cancelled();
     test_pbs_runtime_environment();
     test_walltime_stops_running_job();
+    test_coordinator_enforces_queue_running_limit();
 
     if (failures == 0) {
         std::cout << "all local coordinator tests passed\n";
