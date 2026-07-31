@@ -35,3 +35,6 @@ printf 'current client uid: %s\n' "$(id -u)"
 # a system-wide daemon normally starts as root so it can switch to each owner.
 # a private non-root daemon safely runs jobs from its own uid, but rejects jobs
 # owned by anyone else instead of accidentally running them as the daemon.
+#
+# final stdout/stderr publishing also runs as the owner. output files start as
+# mode 0600, and -o/-e cannot use root to sneak into an unwritable directory.

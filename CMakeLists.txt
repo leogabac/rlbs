@@ -43,6 +43,7 @@ target_include_directories(rlbs_core
 )
 
 add_library(rlbs_execution
+    src/execution/identity.cpp
     src/execution/process_runner.cpp
 )
 

@@ -1,3 +1,6 @@
+// execution nodes keep output private until a job finishes, then publish it as
+// the job owner. that split works locally now and still makes sense when the
+// spool eventually lives on a different machine.
 #pragma once
 
 #include <expected>
@@ -10,10 +13,15 @@ namespace rlbs {
 
 enum class OutputSpoolOperation {
     create_directory,
+    prepare_owner,
+    create_pipe,
+    fork_publisher,
+    switch_owner,
     create_stage_file,
     read_output,
     write_output,
     publish_output,
+    wait_publisher,
     clean_spool,
 };
 
@@ -47,7 +55,8 @@ class PreparedOutputSpool {
                         std::filesystem::path stderr_spool,
                         std::filesystem::path stdout_destination,
                         std::filesystem::path stderr_destination,
-                        bool append_output, bool shared_output);
+                        JobOwner owner, bool append_output,
+                        bool shared_output);
 
     [[nodiscard]] std::expected<void, OutputSpoolError>
     stage_one(const std::filesystem::path& source,
@@ -58,6 +67,7 @@ class PreparedOutputSpool {
     std::filesystem::path stderr_spool_;
     std::filesystem::path stdout_destination_;
     std::filesystem::path stderr_destination_;
+    JobOwner owner_;
     bool append_output_{false};
     bool shared_output_{false};
     bool stdout_staged_{false};

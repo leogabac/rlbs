@@ -3,11 +3,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <pwd.h>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <unistd.h>
+#include <sys/stat.h>
 
 namespace {
 
@@ -67,7 +69,16 @@ void write_file(const std::filesystem::path& path, std::string_view contents,
     output << contents;
 }
 
-[[nodiscard]] rlbs::Job spool_job(const std::filesystem::path& directory) {
+[[nodiscard]] rlbs::JobOwner current_owner() {
+    return {
+        .user_id = static_cast<std::uint32_t>(::geteuid()),
+        .group_id = static_cast<std::uint32_t>(::getegid()),
+    };
+}
+
+[[nodiscard]] rlbs::Job
+spool_job(const std::filesystem::path& directory,
+          rlbs::JobOwner owner = current_owner()) {
     return {
         .id = 17,
         .queue_sequence = 3,
@@ -89,11 +100,7 @@ void write_file(const std::filesystem::path& path, std::string_view contents,
         .assigned_node = "local",
         .result = std::nullopt,
         .execution_time = std::nullopt,
-        .owner =
-            rlbs::JobOwner{
-                .user_id = 1000,
-                .group_id = 100,
-            },
+        .owner = owner,
     };
 }
 
@@ -119,6 +126,17 @@ void test_stages_private_output_at_the_end() {
            "stdout reaches its requested destination");
     expect(read_file(temporary.path() / "final.err") == "stderr bytes\n",
            "stderr reaches its requested destination");
+
+    struct stat published{};
+    expect(::stat((temporary.path() / "final.out").c_str(), &published) == 0,
+           "published stdout can be inspected");
+    expect(static_cast<std::uint32_t>(published.st_uid) ==
+                   job.owner->user_id &&
+               static_cast<std::uint32_t>(published.st_gid) ==
+                   job.owner->group_id,
+           "published stdout belongs to the job owner");
+    expect((published.st_mode & 0777) == 0600,
+           "new output starts with conservative owner-only permissions");
     expect(!std::filesystem::exists(spool->directory()),
            "successful staging removes the private spool");
 }
@@ -196,6 +214,112 @@ void test_joined_streams_share_one_spool() {
            "joined output reaches the shared destination");
 }
 
+void test_owner_permissions_reject_the_destination() {
+    TemporaryDirectory temporary;
+    const auto forbidden = temporary.path() / "read-only";
+    std::filesystem::create_directory(forbidden);
+    auto owner = current_owner();
+
+    if (::geteuid() == 0) {
+        const passwd* nobody = ::getpwnam("nobody");
+
+        if (nobody == nullptr || nobody->pw_uid == 0) {
+            return;
+        }
+
+        owner = {
+            .user_id = static_cast<std::uint32_t>(nobody->pw_uid),
+            .group_id = static_cast<std::uint32_t>(nobody->pw_gid),
+        };
+        std::filesystem::permissions(
+            temporary.path(),
+            std::filesystem::perms::owner_all |
+                std::filesystem::perms::group_read |
+                std::filesystem::perms::group_exec |
+                std::filesystem::perms::others_read |
+                std::filesystem::perms::others_exec);
+        expect(::chown(forbidden.c_str(), nobody->pw_uid, nobody->pw_gid) == 0,
+               "root permission test gives nobody the directory");
+    }
+
+    std::filesystem::permissions(
+        forbidden, std::filesystem::perms::owner_read |
+                       std::filesystem::perms::owner_exec);
+    auto job = spool_job(forbidden, owner);
+    auto spool =
+        rlbs::PreparedOutputSpool::create(temporary.path() / "spool", job);
+
+    expect(spool.has_value(), "permission-test spool prepares");
+
+    if (!spool) {
+        return;
+    }
+
+    write_file(spool->stdout_path(), "still recoverable\n");
+    const auto staged = spool->stage();
+    expect(!staged, "owner cannot publish into a read-only directory");
+    expect(!staged &&
+               staged.error().operation ==
+                   rlbs::OutputSpoolOperation::create_stage_file,
+           "permission failure identifies temporary-file creation");
+    expect(read_file(spool->stdout_path()) == "still recoverable\n",
+           "permission failure keeps the private output");
+}
+
+void test_root_publishes_as_an_unprivileged_owner() {
+    if (::geteuid() != 0) {
+        return;
+    }
+
+    const passwd* nobody = ::getpwnam("nobody");
+
+    if (nobody == nullptr || nobody->pw_uid == 0) {
+        return;
+    }
+
+    TemporaryDirectory temporary;
+    const auto destination = temporary.path() / "owner-output";
+    std::filesystem::create_directory(destination);
+
+    // nobody needs traversal through the test root and ownership of the final
+    // directory. the spool itself deliberately stays private to root.
+    std::filesystem::permissions(
+        temporary.path(),
+        std::filesystem::perms::owner_all |
+            std::filesystem::perms::group_read |
+            std::filesystem::perms::group_exec |
+            std::filesystem::perms::others_read |
+            std::filesystem::perms::others_exec);
+    expect(::chown(destination.c_str(), nobody->pw_uid, nobody->pw_gid) == 0,
+           "root test gives nobody a destination directory");
+
+    const rlbs::JobOwner owner{
+        .user_id = static_cast<std::uint32_t>(nobody->pw_uid),
+        .group_id = static_cast<std::uint32_t>(nobody->pw_gid),
+    };
+    auto job = spool_job(destination, owner);
+    auto spool =
+        rlbs::PreparedOutputSpool::create(temporary.path() / "spool", job);
+
+    expect(spool.has_value(), "cross-user spool prepares");
+
+    if (!spool) {
+        return;
+    }
+
+    write_file(spool->stdout_path(), "owned by nobody\n");
+    write_file(spool->stderr_path(), "");
+    expect(spool->stage().has_value(),
+           "root publisher stages through the owner identity");
+
+    struct stat published{};
+    expect(::stat((destination / "final.out").c_str(), &published) == 0,
+           "cross-user output can be inspected");
+    expect(published.st_uid == nobody->pw_uid &&
+               published.st_gid == nobody->pw_gid,
+           "cross-user output is really owned by the requested account");
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +327,8 @@ int main() {
     test_append_is_published_atomically();
     test_failed_stage_keeps_the_spool();
     test_joined_streams_share_one_spool();
+    test_owner_permissions_reject_the_destination();
+    test_root_publishes_as_an_unprivileged_owner();
 
     if (failures == 0) {
         std::cout << "all output spool tests passed\n";
