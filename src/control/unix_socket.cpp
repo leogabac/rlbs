@@ -221,7 +221,10 @@ peer_owner(int socket) {
                                              JobRepository& repository,
                                              QueueRepository& queues,
                                              LocalCoordinator& coordinator,
-                                             JobOwner owner, Logger* logger) {
+                                             JobOwner owner,
+                                             const AuthorizationPolicy&
+                                                 authorization,
+                                             Logger* logger) {
     // transport ends here. every command uses repository methods instead of
     // teaching socket code enough sqlite to become a second database layer
     if (const auto* submitted = std::get_if<SubmitRequest>(&request)) {
@@ -257,6 +260,12 @@ peer_owner(int socket) {
         summaries.reserve(jobs->size());
 
         for (const auto& job : *jobs) {
+            // queue is a job query too. filtering here avoids leaking command
+            // lines, paths, and resource requests belonging to other users.
+            if (!authorization.can_read_job(owner, job)) {
+                continue;
+            }
+
             summaries.push_back({
                 .id = job.id,
                 .name = job.spec.name,
@@ -284,11 +293,35 @@ peer_owner(int socket) {
                                             std::to_string(status->job_id) +
                                             " was not found"};
         }
+        if (!authorization.can_read_job(owner, **job)) {
+            return ErrorResponse{
+                .message = "permission denied for job " +
+                           std::to_string(status->job_id)};
+        }
 
         return StatusResponse{.job = std::move(**job)};
     }
 
     if (const auto* cancel = std::get_if<CancelRequest>(&request)) {
+        // check ownership before the coordinator sees the request. the extra
+        // repository read is boring but important: cancel() has no requester
+        // identity and therefore cannot possibly make this decision itself.
+        auto job = repository.find(cancel->job_id);
+
+        if (!job) {
+            return ErrorResponse{.message = job.error().message};
+        }
+        if (!*job) {
+            return ErrorResponse{.message = "job " +
+                                            std::to_string(cancel->job_id) +
+                                            " was not found"};
+        }
+        if (!authorization.can_cancel_job(owner, **job)) {
+            return ErrorResponse{
+                .message = "permission denied for job " +
+                           std::to_string(cancel->job_id)};
+        }
+
         auto cancelled = coordinator.cancel(cancel->job_id);
 
         if (!cancelled) {
@@ -309,6 +342,12 @@ peer_owner(int socket) {
     }
 
     if (const auto* add = std::get_if<AddQueueRequest>(&request)) {
+        if (!authorization.can_manage_queues(owner)) {
+            return ErrorResponse{
+                .message = "permission denied: queue administration requires "
+                           "the daemon owner or root"};
+        }
+
         auto added = queues.add(add->queue);
 
         if (!added) {
@@ -323,6 +362,12 @@ peer_owner(int socket) {
     }
 
     if (const auto* update = std::get_if<UpdateQueueRequest>(&request)) {
+        if (!authorization.can_manage_queues(owner)) {
+            return ErrorResponse{
+                .message = "permission denied: queue administration requires "
+                           "the daemon owner or root"};
+        }
+
         std::expected<BatchQueue, QueueRepositoryError> changed =
             std::unexpected{QueueRepositoryError{}};
 
@@ -382,15 +427,18 @@ void send_error_response(int socket, std::string_view message) {
 ControlServer::ControlServer(int socket, std::filesystem::path path,
                              JobRepository& repository,
                              QueueRepository& queues,
-                             LocalCoordinator& coordinator, Logger* logger)
+                             LocalCoordinator& coordinator,
+                             AuthorizationPolicy authorization, Logger* logger)
     : socket_{socket}, path_{std::move(path)}, repository_{&repository},
-      queues_{&queues}, coordinator_{&coordinator}, logger_{logger},
+      queues_{&queues}, coordinator_{&coordinator},
+      authorization_{std::move(authorization)}, logger_{logger},
       owns_path_{true} {}
 
 ControlServer::ControlServer(ControlServer&& other) noexcept
     : socket_{std::exchange(other.socket_, -1)}, path_{std::move(other.path_)},
       repository_{other.repository_}, queues_{other.queues_},
-      coordinator_{other.coordinator_}, logger_{other.logger_},
+      coordinator_{other.coordinator_},
+      authorization_{std::move(other.authorization_)}, logger_{other.logger_},
       owns_path_{std::exchange(other.owns_path_, false)} {}
 
 ControlServer::~ControlServer() { close(); }
@@ -450,8 +498,16 @@ ControlServer::listen(const std::filesystem::path& path,
                                      listen_error, path.string())};
     }
 
+    // use effective ids because those are the privileges rlbsd is actually
+    // running with after a service manager or launcher has done its setup.
+    const AuthorizationPolicy authorization{
+        JobOwner{
+            .user_id = static_cast<std::uint32_t>(::geteuid()),
+            .group_id = static_cast<std::uint32_t>(::getegid()),
+        }};
+
     return ControlServer{socket.release(), path, repository, queues, coordinator,
-                         logger};
+                         authorization, logger};
 }
 
 std::expected<std::size_t, ControlSocketError> ControlServer::poll() {
@@ -509,7 +565,7 @@ void ControlServer::handle_client(int client_socket) {
 
     auto response = encode_response(
         handle_request(*request, *repository_, *queues_, *coordinator_,
-                       *owner, logger_));
+                       *owner, authorization_, logger_));
 
     if (!response) {
         send_error_response(client_socket, response.error().message);

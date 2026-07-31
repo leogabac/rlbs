@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <string>
 
+#include <rlbs/control/authorization.hpp>
 #include <rlbs/control/protocol.hpp>
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
@@ -66,7 +67,8 @@ class ControlServer {
   private:
     ControlServer(int socket, std::filesystem::path path,
                   JobRepository& repository, QueueRepository& queues,
-                  LocalCoordinator& coordinator, Logger* logger);
+                  LocalCoordinator& coordinator,
+                  AuthorizationPolicy authorization, Logger* logger);
 
     void handle_client(int client_socket);
 
@@ -75,6 +77,7 @@ class ControlServer {
     JobRepository* repository_{nullptr};
     QueueRepository* queues_{nullptr};
     LocalCoordinator* coordinator_{nullptr};
+    AuthorizationPolicy authorization_;
     Logger* logger_{nullptr};
     bool owns_path_{false};
 };

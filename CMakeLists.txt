@@ -69,6 +69,7 @@ target_link_libraries(rlbs_persistence
 )
 
 add_library(rlbs_control
+    src/control/authorization.cpp
     src/control/protocol.cpp
     src/control/unix_socket.cpp
 )
@@ -347,6 +348,7 @@ if(BUILD_TESTING)
     )
 
     add_executable(rlbs_control_tests
+        tests/control/authorization_test.cpp
         tests/control/protocol_test.cpp
     )
 

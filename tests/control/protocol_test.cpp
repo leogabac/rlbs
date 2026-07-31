@@ -419,6 +419,8 @@ void test_bad_frames_are_rejected() {
 
 } // namespace
 
+int run_authorization_tests();
+
 int main() {
     test_submit_request_round_trip();
     test_query_requests_round_trip();
@@ -427,6 +429,7 @@ int main() {
     test_query_responses_round_trip();
     test_queue_admin_responses_round_trip();
     test_bad_frames_are_rejected();
+    failures += run_authorization_tests();
 
     if (failures == 0) {
         std::cout << "all control protocol tests passed\n";
