@@ -2,7 +2,7 @@
 
 # rlbsd trusts the uid attached to the unix socket by the kernel. job owners
 # can see and cancel their own jobs; root and the account running rlbsd can see
-# everything and change queues. jobs still execute as the daemon user for now.
+# everything and change queues. execution children drop to the recorded owner.
 set -eu
 
 rlbs_bin="${RLBS_BIN:-./build/rlbs}"
@@ -31,3 +31,7 @@ printf 'current client uid: %s\n' "$(id -u)"
 # sudo -u bob "$rlbs_bin" queues --socket "$rlbs_socket"
 # sudo -u bob "$rlbs_bin" queues stop default --socket "$rlbs_socket"
 # sudo "$rlbs_bin" queues stop default --socket "$rlbs_socket"
+
+# a system-wide daemon normally starts as root so it can switch to each owner.
+# a private non-root daemon safely runs jobs from its own uid, but rejects jobs
+# owned by anyone else instead of accidentally running them as the daemon.

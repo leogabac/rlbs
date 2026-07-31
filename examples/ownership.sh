@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# this demonstrates recorded ownership, not user impersonation yet. rlbsd reads
-# uid/gid from the unix socket and stores them on the job, but the execution
-# child still runs as the daemon account until privilege dropping is added.
+# rlbsd reads uid/gid from the unix socket, stores them on the job, and runs the
+# execution child as that account. there is still no user option because job
+# text should never get a vote in which unix identity executes it.
 set -eu
 
 rlbs_bin="${RLBS_BIN:-./build/rlbs}"
@@ -23,5 +23,6 @@ submission="$(
 job_id="${submission##* }"
 printf '%s\n' "$submission"
 
-# owner uid:gid should match the shell identity printed above.
+# owner uid:gid should match the shell identity printed above, and the command
+# itself runs with that identity too.
 "$rlbs_bin" status --socket "$rlbs_socket" "$job_id"

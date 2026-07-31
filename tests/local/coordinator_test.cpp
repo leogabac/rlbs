@@ -17,9 +17,9 @@ namespace {
 
 int failures = 0;
 
-constexpr rlbs::JobOwner test_owner{
-    .user_id = 1000,
-    .group_id = 100,
+const rlbs::JobOwner test_owner{
+    .user_id = static_cast<std::uint32_t>(::geteuid()),
+    .group_id = static_cast<std::uint32_t>(::getegid()),
 };
 
 void expect(bool condition, std::string_view message) {

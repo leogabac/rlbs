@@ -9,6 +9,7 @@
 #include <sys/types.h>
 
 #include <rlbs/core/job_result.hpp>
+#include <rlbs/core/job_owner.hpp>
 #include <rlbs/core/job_spec.hpp>
 
 namespace rlbs {
@@ -21,6 +22,9 @@ struct ProcessSpec {
     std::optional<std::filesystem::path> stdout_path;
     std::optional<std::filesystem::path> stderr_path;
     bool append_output{false};
+    // this comes from the daemon's socket credentials, never from job text.
+    // nullopt keeps the runner useful for trusted internal callers and tests.
+    std::optional<JobOwner> run_as;
 };
 
 // keep the runner name readable while storing the exact same type on a job
@@ -30,10 +34,14 @@ enum class ProcessOperation {
     validate,
     validate_handle,
     inspect_working_directory,
+    resolve_identity,
     open_output,
     create_pipe,
     fork_process,
     create_process_group,
+    set_supplementary_groups,
+    set_group_id,
+    set_user_id,
     change_working_directory,
     redirect_output,
     execute,

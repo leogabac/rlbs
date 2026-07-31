@@ -17,7 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <grp.h>
 #include <map>
+#include <pwd.h>
 #include <string_view>
 #include <utility>
 
@@ -93,6 +95,9 @@ class UniqueFd {
 // which pre-exec step failed without trying to ship a c++ object across
 enum class ChildOperation : int {
     create_process_group,
+    set_supplementary_groups,
+    set_group_id,
+    set_user_id,
     change_working_directory,
     redirect_output,
     execute,
@@ -102,6 +107,16 @@ enum class ChildOperation : int {
 struct ChildFailure {
     ChildOperation operation;
     int system_error;
+};
+
+// passwd/group lookup happens before fork. libc may allocate memory or take
+// internal locks while consulting nss, and doing that in the child is exactly
+// the sort of thing that only fails at 3am on the weirdest machine available.
+struct PreparedIdentity {
+    uid_t user_id{0};
+    gid_t group_id{0};
+    std::vector<gid_t> supplementary_groups;
+    bool switch_credentials{false};
 };
 
 // bundle the failed operation, errno, and a useful label into one consistent
@@ -119,6 +134,141 @@ struct ChildFailure {
 // the kernel see only half the value and leave us debugging a very fake mystery
 [[nodiscard]] bool contains_null(std::string_view value) {
     return value.find('\0') != std::string_view::npos;
+}
+
+[[nodiscard]] std::string identity_label(JobOwner owner) {
+    return "uid=" + std::to_string(owner.user_id) +
+           " gid=" + std::to_string(owner.group_id);
+}
+
+[[nodiscard]] std::expected<std::string, ProcessError>
+username_for(uid_t user_id, JobOwner owner) {
+    // getpwuid_r needs caller-owned scratch storage. 16k handles normal passwd
+    // entries; erange grows it without trusting one fixed libc-specific size.
+    std::vector<char> buffer(16 * 1024);
+
+    for (;;) {
+        passwd record{};
+        passwd* found = nullptr;
+        const int result = ::getpwuid_r(user_id, &record, buffer.data(),
+                                        buffer.size(), &found);
+
+        if (result == 0 && found != nullptr && found->pw_name != nullptr) {
+            return std::string{found->pw_name};
+        }
+        if (result == 0) {
+            return std::unexpected{
+                error(ProcessOperation::resolve_identity, ESRCH,
+                      identity_label(owner) + " has no passwd entry")};
+        }
+        if (result != ERANGE ||
+            buffer.size() >= static_cast<std::size_t>(1024 * 1024)) {
+            return std::unexpected{
+                error(ProcessOperation::resolve_identity, result,
+                      "could not resolve " + identity_label(owner))};
+        }
+
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
+[[nodiscard]] std::expected<std::vector<gid_t>, ProcessError>
+groups_for(std::string_view username, gid_t primary_group, JobOwner owner) {
+    // getgrouplist tells us the required count by failing the first undersized
+    // call. starting with a useful guess avoids making failure the common path.
+    std::vector<gid_t> groups(16);
+    int count = static_cast<int>(groups.size());
+    std::string owned_username{username};
+
+    if (::getgrouplist(owned_username.c_str(), primary_group, groups.data(),
+                       &count) < 0) {
+        const long configured_limit = ::sysconf(_SC_NGROUPS_MAX);
+        const long group_limit =
+            configured_limit > 0 ? configured_limit : 65536;
+
+        // nss supplies this count. cap it to what the kernel can actually use
+        // before an absurd response turns into an absurd allocation.
+        if (count <= 0 || static_cast<long>(count) > group_limit) {
+            return std::unexpected{
+                error(ProcessOperation::resolve_identity, EOVERFLOW,
+                      "group list is unreasonable for " +
+                          identity_label(owner))};
+        }
+
+        groups.resize(static_cast<std::size_t>(count));
+
+        if (::getgrouplist(owned_username.c_str(), primary_group,
+                           groups.data(), &count) < 0) {
+            return std::unexpected{
+                error(ProcessOperation::resolve_identity, EIO,
+                      "could not resolve groups for " +
+                          identity_label(owner))};
+        }
+    }
+
+    groups.resize(static_cast<std::size_t>(count));
+    return groups;
+}
+
+[[nodiscard]] std::expected<std::optional<PreparedIdentity>, ProcessError>
+prepare_identity(const std::optional<JobOwner>& requested) {
+    if (!requested) {
+        return std::nullopt;
+    }
+
+    const auto uid = static_cast<uid_t>(requested->user_id);
+    const auto gid = static_cast<gid_t>(requested->group_id);
+
+    if (static_cast<std::uintmax_t>(uid) != requested->user_id ||
+        static_cast<std::uintmax_t>(gid) != requested->group_id) {
+        return std::unexpected{
+            error(ProcessOperation::resolve_identity, EOVERFLOW,
+                  identity_label(*requested) + " does not fit this system")};
+    }
+
+    const auto current_uid = ::geteuid();
+    const auto current_gid = ::getegid();
+
+    // the private, single-user daemon needs no privileged calls. it is already
+    // the requested identity and already has that user's supplementary groups.
+    if (uid == current_uid && gid == current_gid) {
+        return PreparedIdentity{
+            .user_id = uid,
+            .group_id = gid,
+            .supplementary_groups = {},
+            .switch_credentials = false,
+        };
+    }
+
+    // a normal process cannot become another uid. rejecting this before fork
+    // gives the scheduler a useful failure instead of letting setuid explode in
+    // a child after half the launch setup already happened.
+    if (current_uid != 0) {
+        return std::unexpected{
+            error(ProcessOperation::resolve_identity, EPERM,
+                  "rlbsd cannot switch from uid=" +
+                      std::to_string(current_uid) + " to " +
+                      identity_label(*requested))};
+    }
+
+    auto username = username_for(uid, *requested);
+
+    if (!username) {
+        return std::unexpected{std::move(username.error())};
+    }
+
+    auto groups = groups_for(*username, gid, *requested);
+
+    if (!groups) {
+        return std::unexpected{std::move(groups.error())};
+    }
+
+    return PreparedIdentity{
+        .user_id = uid,
+        .group_id = gid,
+        .supplementary_groups = std::move(*groups),
+        .switch_credentials = true,
+    };
 }
 
 // check the whole request while we are still safely in the parent. spec carries
@@ -374,21 +524,60 @@ void redirect_fd(int source, int destination, int error_pipe) {
     }
 }
 
+// throw away the daemon's groups first, then its primary gid, then its uid.
+// that order is not aesthetic: changing uid first would remove the privilege
+// needed by the two group calls and leave the job carrying daemon access.
+void switch_identity(const PreparedIdentity& identity, int error_pipe) {
+    if (!identity.switch_credentials) {
+        return;
+    }
+
+    const auto* groups = identity.supplementary_groups.empty()
+                             ? nullptr
+                             : identity.supplementary_groups.data();
+
+    if (::setgroups(identity.supplementary_groups.size(), groups) < 0) {
+        report_child_failure(error_pipe,
+                             ChildOperation::set_supplementary_groups, errno);
+    }
+
+    if (::setgid(identity.group_id) < 0) {
+        report_child_failure(error_pipe, ChildOperation::set_group_id, errno);
+    }
+
+    if (::setuid(identity.user_id) < 0) {
+        report_child_failure(error_pipe, ChildOperation::set_user_id, errno);
+    }
+
+    // setuid/setgid returning success is supposed to be enough, but checking
+    // the effective ids costs basically nothing and makes this boundary less
+    // dependent on surprising platform semantics.
+    if (::geteuid() != identity.user_id) {
+        report_child_failure(error_pipe, ChildOperation::set_user_id, EACCES);
+    }
+    if (::getegid() != identity.group_id) {
+        report_child_failure(error_pipe, ChildOperation::set_group_id, EACCES);
+    }
+
+    // if a non-root job can get uid 0 back, saved credentials survived and the
+    // drop was fake. abort while this is still the tiny setup child.
+    if (identity.user_id != 0 && ::setuid(0) == 0) {
+        report_child_failure(error_pipe, ChildOperation::set_user_id, EACCES);
+    }
+}
+
 // this is the child-only half of launch. it creates the job process group,
-// changes directory, wires output, and finally replaces itself with argv[0]
+// wires output, drops daemon privileges, checks the cwd as that user, and then
+// finally replaces itself with argv[0]
 [[noreturn]] void execute_child(int error_pipe, int stdout_fd, int stderr_fd,
                                 bool joined_output,
                                 const std::filesystem::path& directory,
+                                const std::optional<PreparedIdentity>& identity,
                                 const std::vector<std::string>& candidates,
                                 char* const* argv, char* const* environment) {
     if (::setpgid(0, 0) < 0) {
         report_child_failure(error_pipe, ChildOperation::create_process_group,
                              errno);
-    }
-
-    if (::chdir(directory.c_str()) < 0) {
-        report_child_failure(error_pipe,
-                             ChildOperation::change_working_directory, errno);
     }
 
     redirect_fd(stdout_fd, STDOUT_FILENO, error_pipe);
@@ -410,6 +599,17 @@ void redirect_fd(int source, int destination, int error_pipe) {
     if (stderr_fd >= 0 && stderr_fd != STDERR_FILENO &&
         stderr_fd != stdout_fd) {
         static_cast<void>(::close(stderr_fd));
+    }
+
+    if (identity) {
+        switch_identity(*identity, error_pipe);
+    }
+
+    // do this after dropping credentials. checking the directory as root and
+    // then handing it to an ordinary job would quietly bypass its permissions.
+    if (::chdir(directory.c_str()) < 0) {
+        report_child_failure(error_pipe,
+                             ChildOperation::change_working_directory, errno);
     }
 
     int execute_error = ENOENT;
@@ -437,6 +637,12 @@ void redirect_fd(int source, int destination, int error_pipe) {
     switch (operation) {
     case ChildOperation::create_process_group:
         return ProcessOperation::create_process_group;
+    case ChildOperation::set_supplementary_groups:
+        return ProcessOperation::set_supplementary_groups;
+    case ChildOperation::set_group_id:
+        return ProcessOperation::set_group_id;
+    case ChildOperation::set_user_id:
+        return ProcessOperation::set_user_id;
     case ChildOperation::change_working_directory:
         return ProcessOperation::change_working_directory;
     case ChildOperation::redirect_output:
@@ -446,6 +652,26 @@ void redirect_fd(int source, int destination, int error_pipe) {
     }
 
     return ProcessOperation::execute;
+}
+
+[[nodiscard]] std::string
+child_failure_context(ChildOperation operation, const ProcessSpec& spec) {
+    switch (operation) {
+    case ChildOperation::set_supplementary_groups:
+        return "could not set supplementary groups for " +
+               identity_label(*spec.run_as);
+    case ChildOperation::set_group_id:
+        return "could not set gid for " + identity_label(*spec.run_as);
+    case ChildOperation::set_user_id:
+        return "could not set uid for " + identity_label(*spec.run_as);
+    case ChildOperation::create_process_group:
+    case ChildOperation::change_working_directory:
+    case ChildOperation::redirect_output:
+    case ChildOperation::execute:
+        return spec.argv.front();
+    }
+
+    return spec.argv.front();
 }
 
 // if launch fails after fork, wait for that child here so it does not sit
@@ -557,6 +783,12 @@ LocalProcessRunner::launch(const ProcessSpec& spec) const {
         return std::unexpected{std::move(directory.error())};
     }
 
+    auto identity = prepare_identity(spec.run_as);
+
+    if (!identity) {
+        return std::unexpected{std::move(identity.error())};
+    }
+
     // resolve and open output before fork so ordinary filesystem errors come
     // back as ordinary errors, not cryptic messages from a half-created child
     const auto stdout_path = resolve_output_path(spec.stdout_path, *directory);
@@ -617,7 +849,7 @@ LocalProcessRunner::launch(const ProcessSpec& spec) const {
         // the child writes failures, so keeping the read end open serves no one
         pipe_read.reset();
         execute_child(pipe_write.get(), stdout_file->get(), stderr_file->get(),
-                      joined_output, *directory, candidates,
+                      joined_output, *directory, *identity, candidates,
                       argv_pointers.data(), environment_pointers.data());
     }
 
@@ -651,7 +883,8 @@ LocalProcessRunner::launch(const ProcessSpec& spec) const {
         reap_after_failed_launch(pid);
         return std::unexpected{
             error(operation_from_child((*child_failure)->operation),
-                  (*child_failure)->system_error, spec.argv.front())};
+                  (*child_failure)->system_error,
+                  child_failure_context((*child_failure)->operation, spec))};
     }
 
     return ProcessHandle{pid, pid};

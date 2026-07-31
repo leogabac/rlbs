@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
+#include <pwd.h>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -176,6 +178,11 @@ int run_helper(int argc, char* argv[]) {
         return 25;
     }
 
+    if (mode == "--identity") {
+        std::cout << ::geteuid() << ' ' << ::getegid() << '\n';
+        return 0;
+    }
+
     if (mode == "--ignore-term" && argc == 3) {
         struct sigaction action{};
         action.sa_handler = SIG_IGN;
@@ -220,6 +227,7 @@ void test_missing_executable() {
         .stdout_path = std::nullopt,
         .stderr_path = std::nullopt,
         .append_output = false,
+        .run_as = std::nullopt,
     };
     const auto launched = rlbs::LocalProcessRunner{}.launch(spec);
 
@@ -243,6 +251,7 @@ void test_execution_and_redirection(const std::filesystem::path& self) {
         .stdout_path = stdout_path.filename(),
         .stderr_path = stderr_path.filename(),
         .append_output = false,
+        .run_as = std::nullopt,
     };
     const rlbs::LocalProcessRunner runner;
     auto launched = runner.launch(spec);
@@ -291,6 +300,7 @@ void test_signal_result(const std::filesystem::path& self) {
         .stdout_path = std::nullopt,
         .stderr_path = std::nullopt,
         .append_output = false,
+        .run_as = std::nullopt,
     });
 
     expect(launched.has_value(), "signal helper launches");
@@ -317,6 +327,7 @@ void test_path_search() {
         .stdout_path = std::nullopt,
         .stderr_path = std::nullopt,
         .append_output = false,
+        .run_as = std::nullopt,
     });
 
     expect(launched.has_value(),
@@ -351,6 +362,7 @@ void test_process_group_cancellation(const std::filesystem::path& self) {
         .stdout_path = std::nullopt,
         .stderr_path = std::nullopt,
         .append_output = false,
+        .run_as = std::nullopt,
     });
 
     expect(launched.has_value(), "process-group helper launches");
@@ -396,6 +408,7 @@ void test_force_kill(const std::filesystem::path& self) {
         .stdout_path = std::nullopt,
         .stderr_path = std::nullopt,
         .append_output = false,
+        .run_as = std::nullopt,
     });
 
     expect(launched.has_value(), "force-kill helper launches");
@@ -425,6 +438,94 @@ void test_force_kill(const std::filesystem::path& self) {
            "forced cancellation records sigkill");
 }
 
+void test_execution_identity(const std::filesystem::path& self) {
+    TemporaryDirectory temporary;
+    const auto output_path = temporary.path() / "identity.txt";
+    rlbs::JobOwner requested{
+        .user_id = static_cast<std::uint32_t>(::geteuid()),
+        .group_id = static_cast<std::uint32_t>(::getegid()),
+    };
+
+    // when the suite itself is root, use nobody for one real privilege drop.
+    // normal developer runs still exercise the same-user no-op path without
+    // needing sudo just to run the test suite.
+    if (::geteuid() == 0) {
+        if (const passwd* nobody = ::getpwnam("nobody");
+            nobody != nullptr && nobody->pw_uid != 0) {
+            requested.user_id = static_cast<std::uint32_t>(nobody->pw_uid);
+            requested.group_id = static_cast<std::uint32_t>(nobody->pw_gid);
+            std::filesystem::permissions(
+                temporary.path(),
+                std::filesystem::perms::owner_all |
+                    std::filesystem::perms::group_read |
+                    std::filesystem::perms::group_exec |
+                    std::filesystem::perms::others_read |
+                    std::filesystem::perms::others_exec);
+        }
+    }
+
+    const rlbs::LocalProcessRunner runner;
+    auto launched = runner.launch({
+        .argv = {self.string(), "--identity"},
+        .working_directory = temporary.path(),
+        .environment = {},
+        .inherit_environment = true,
+        .stdout_path = output_path,
+        .stderr_path = std::nullopt,
+        .append_output = false,
+        .run_as = requested,
+    });
+
+    expect(launched.has_value(), "process launches with a requested identity");
+
+    if (!launched) {
+        return;
+    }
+
+    auto handle = std::move(*launched);
+    const auto result = runner.wait(handle);
+    expect(result && result->exit_code == 0,
+           "identity helper exits normally");
+    expect(read_file(output_path) == std::to_string(requested.user_id) + " " +
+                                         std::to_string(requested.group_id) +
+                                         "\n",
+           "child runs with the requested uid and gid");
+}
+
+void test_unprivileged_identity_switch_is_rejected() {
+    if (::geteuid() == 0) {
+        return;
+    }
+
+    const auto current_uid = static_cast<std::uint32_t>(::geteuid());
+    const auto other_uid =
+        current_uid == std::numeric_limits<std::uint32_t>::max()
+            ? current_uid - 1
+            : current_uid + 1;
+    const auto launched = rlbs::LocalProcessRunner{}.launch({
+        .argv = {"/bin/true"},
+        .working_directory = std::nullopt,
+        .environment = {},
+        .inherit_environment = true,
+        .stdout_path = std::nullopt,
+        .stderr_path = std::nullopt,
+        .append_output = false,
+        .run_as =
+            rlbs::JobOwner{
+                .user_id = other_uid,
+                .group_id = static_cast<std::uint32_t>(::getegid()),
+            },
+    });
+
+    expect(!launched, "unprivileged runner rejects another uid");
+    expect(!launched &&
+               launched.error().operation ==
+                   rlbs::ProcessOperation::resolve_identity,
+           "identity rejection names the account-resolution step");
+    expect(!launched && launched.error().system_error == EPERM,
+           "identity rejection keeps the permission error");
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -440,6 +541,8 @@ int main(int argc, char* argv[]) {
     test_path_search();
     test_process_group_cancellation(self);
     test_force_kill(self);
+    test_execution_identity(self);
+    test_unprivileged_identity_switch_is_rejected();
 
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";

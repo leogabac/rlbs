@@ -75,6 +75,9 @@ process_spec(const Job& job,
         // append applies when the spool is staged. each launch gets a fresh
         // private file, so appending inside it would only preserve stale junk
         .append_output = false,
+        // ownership was observed by the daemon at submission. passing that
+        // exact value down keeps job text out of the privilege decision.
+        .run_as = job.owner,
     };
 }
 
@@ -471,6 +474,36 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         return std::unexpected{
             repository_failure(LocalCoordinatorOperation::persist_starting,
                                std::move(starting.error()))};
+    }
+
+    // old databases can contain jobs from before ownership was recorded. do
+    // not "helpfully" run those as the daemon, especially when the daemon is
+    // root. nobody knows who they belong to, so failing is the honest answer.
+    if (!job.owner) {
+        auto failed = repository_.transition(
+            job.id,
+            {
+                .state = JobState::failed,
+                .assigned_node = std::nullopt,
+                .result = std::nullopt,
+                .detail = "cannot execute a legacy job without an owner",
+            });
+        static_cast<void>(release(assignment.allocation));
+
+        if (!failed) {
+            return std::unexpected{repository_failure(
+                LocalCoordinatorOperation::persist_starting,
+                std::move(failed.error()))};
+        }
+
+        if (logger_ != nullptr) {
+            logger_->warning(
+                "executor",
+                "job " + std::to_string(job.id) +
+                    " rejected because its legacy record has no owner");
+        }
+
+        return {};
     }
 
     auto runtime_environment =
