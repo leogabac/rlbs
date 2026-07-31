@@ -73,8 +73,8 @@ int main(int argc, char* argv[]) {
         config->spool_path,
         &logger,
     };
-    auto control = rlbs::ControlServer::listen(config->socket_path, repository,
-                                               coordinator, &logger);
+    auto control = rlbs::ControlServer::listen(
+        config->socket_path, repository, queues, coordinator, &logger);
 
     if (!control) {
         std::string message = "could not open " + config->socket_path.string() +

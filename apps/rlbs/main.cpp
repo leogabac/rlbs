@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <rlbs/cli/query.hpp>
+#include <rlbs/cli/queues.hpp>
 #include <rlbs/cli/submit.hpp>
 #include <rlbs/control/unix_socket.hpp>
 #include <rlbs/core/version.hpp>
@@ -225,6 +226,94 @@ int nodes(int argc, char* argv[]) {
     return 0;
 }
 
+[[nodiscard]] rlbs::QueueAction
+queue_action(rlbs::QueuesCommandAction action) {
+    switch (action) {
+    case rlbs::QueuesCommandAction::start:
+        return rlbs::QueueAction::start;
+    case rlbs::QueuesCommandAction::stop:
+        return rlbs::QueueAction::stop;
+    case rlbs::QueuesCommandAction::enable:
+        return rlbs::QueueAction::enable;
+    case rlbs::QueuesCommandAction::disable:
+        return rlbs::QueueAction::disable;
+    case rlbs::QueuesCommandAction::list:
+    case rlbs::QueuesCommandAction::add:
+        break;
+    }
+
+    return rlbs::QueueAction::start;
+}
+
+[[nodiscard]] std::string_view
+queue_action_name(rlbs::QueuesCommandAction action) {
+    switch (action) {
+    case rlbs::QueuesCommandAction::add:
+        return "added";
+    case rlbs::QueuesCommandAction::start:
+        return "started";
+    case rlbs::QueuesCommandAction::stop:
+        return "stopped";
+    case rlbs::QueuesCommandAction::enable:
+        return "enabled";
+    case rlbs::QueuesCommandAction::disable:
+        return "disabled";
+    case rlbs::QueuesCommandAction::list:
+        break;
+    }
+
+    return "updated";
+}
+
+int queues(int argc, char* argv[]) {
+    auto command = rlbs::parse_queues_command(command_arguments(argc, argv));
+
+    if (!command) {
+        std::cerr << "rlbs queues: " << command.error() << '\n'
+                  << rlbs::queues_usage();
+        return 2;
+    }
+    if (command->show_help) {
+        std::cout << rlbs::queues_usage();
+        return 0;
+    }
+
+    rlbs::ControlClient client{command->socket_path};
+
+    if (command->action == rlbs::QueuesCommandAction::list) {
+        auto stored = client.queues();
+
+        if (!stored) {
+            print_control_error("rlbs queues", stored.error());
+            return 1;
+        }
+
+        std::cout << rlbs::format_queues(*stored);
+        return 0;
+    }
+
+    std::expected<rlbs::BatchQueue, rlbs::ControlSocketError> changed =
+        command->action == rlbs::QueuesCommandAction::add
+            ? client.add_queue({
+                  .name = command->name,
+                  .priority = command->priority,
+                  .enabled = true,
+                  .started = true,
+                  .max_running = command->max_running,
+              })
+            : client.update_queue(command->name,
+                                  queue_action(command->action));
+
+    if (!changed) {
+        print_control_error("rlbs queues", changed.error());
+        return 1;
+    }
+
+    std::cout << "queue " << changed->name << ' '
+              << queue_action_name(command->action) << '\n';
+    return 0;
+}
+
 [[nodiscard]] bool qstat_has_job_id(int argc, char* argv[]) {
     // qstat owns both queue and status. skip our socket extension and its value,
     // then any argument left that is not help has to be the requested job id
@@ -295,6 +384,9 @@ int main(int argc, char* argv[]) {
     }
     if (command == "nodes") {
         return nodes(argc - 2, argv + 2);
+    }
+    if (command == "queues") {
+        return queues(argc - 2, argv + 2);
     }
 
     std::cerr << "rlbs: unknown command: " << command << '\n'

@@ -1,3 +1,6 @@
+// queue changes are intentionally tiny atomic updates. scheduling rereads them
+// every tick, so stop really means "do not launch the next one" without a
+// daemon restart or some second in-memory copy getting stale.
 #include <rlbs/persistence/queue_repository.hpp>
 
 #include <cstdint>
@@ -270,6 +273,96 @@ ORDER BY priority DESC, name ASC;
 
         queues.push_back(std::move(*queue));
     }
+}
+
+std::expected<BatchQueue, QueueRepositoryError>
+QueueRepository::set_started(std::string_view name, bool started) {
+    constexpr const char* sql = "UPDATE queues SET started = ? WHERE name = ?;";
+    const auto operation = QueueRepositoryOperation::update_queue;
+    auto statement = prepare(connection_, sql, operation);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    if (auto bound =
+            bind_integer(connection_, statement->get(), 1, started, operation);
+        !bound) {
+        return std::unexpected{std::move(bound.error())};
+    }
+    if (auto bound =
+            bind_text(connection_, statement->get(), 2, name, operation);
+        !bound) {
+        return std::unexpected{std::move(bound.error())};
+    }
+
+    const int result = sqlite3_step(statement->get());
+
+    if (result != SQLITE_DONE) {
+        return std::unexpected{error(connection_, operation, result)};
+    }
+
+    auto updated = find(name);
+
+    if (!updated) {
+        return std::unexpected{QueueRepositoryError{
+            .operation = operation,
+            .sqlite_code = updated.error().sqlite_code,
+            .message = std::move(updated.error().message),
+        }};
+    }
+    if (!*updated) {
+        return std::unexpected{
+            error(connection_, operation, SQLITE_NOTFOUND,
+                  "queue does not exist: " + std::string{name})};
+    }
+
+    return std::move(**updated);
+}
+
+std::expected<BatchQueue, QueueRepositoryError>
+QueueRepository::set_enabled(std::string_view name, bool enabled) {
+    constexpr const char* sql = "UPDATE queues SET enabled = ? WHERE name = ?;";
+    const auto operation = QueueRepositoryOperation::update_queue;
+    auto statement = prepare(connection_, sql, operation);
+
+    if (!statement) {
+        return std::unexpected{std::move(statement.error())};
+    }
+
+    if (auto bound =
+            bind_integer(connection_, statement->get(), 1, enabled, operation);
+        !bound) {
+        return std::unexpected{std::move(bound.error())};
+    }
+    if (auto bound =
+            bind_text(connection_, statement->get(), 2, name, operation);
+        !bound) {
+        return std::unexpected{std::move(bound.error())};
+    }
+
+    const int result = sqlite3_step(statement->get());
+
+    if (result != SQLITE_DONE) {
+        return std::unexpected{error(connection_, operation, result)};
+    }
+
+    auto updated = find(name);
+
+    if (!updated) {
+        return std::unexpected{QueueRepositoryError{
+            .operation = operation,
+            .sqlite_code = updated.error().sqlite_code,
+            .message = std::move(updated.error().message),
+        }};
+    }
+    if (!*updated) {
+        return std::unexpected{
+            error(connection_, operation, SQLITE_NOTFOUND,
+                  "queue does not exist: " + std::string{name})};
+    }
+
+    return std::move(**updated);
 }
 
 } // namespace rlbs

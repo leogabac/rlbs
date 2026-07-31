@@ -320,6 +320,31 @@ void test_rejects_unknown_queue() {
            "unknown queue failure identifies queue validation");
 }
 
+void test_rejects_disabled_queue() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "disabled-queue.db");
+
+    expect(database.has_value(), "disabled queue database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::QueueRepository queues{*database};
+    expect(queues.set_enabled("default", false).has_value(),
+           "default queue is disabled");
+
+    rlbs::JobRepository repository{*database};
+    const auto rejected = repository.submit(example_spec("disabled queue"));
+
+    expect(!rejected, "disabled queue rejects a new job");
+    expect(!rejected &&
+               rejected.error().operation ==
+                   rlbs::RepositoryOperation::validate_queue,
+           "disabled queue failure identifies queue validation");
+}
+
 void test_transitions_store_results_and_events() {
     TemporaryDirectory temporary;
     auto database =
@@ -531,6 +556,7 @@ int main() {
     test_all_jobs_include_finished_jobs();
     test_failed_submission_rolls_back();
     test_rejects_unknown_queue();
+    test_rejects_disabled_queue();
     test_transitions_store_results_and_events();
     test_invalid_transition_changes_nothing();
     test_event_failure_rolls_back_state();

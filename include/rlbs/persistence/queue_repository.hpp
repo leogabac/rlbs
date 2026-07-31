@@ -1,3 +1,6 @@
+// queue policy has to survive daemon restarts, so this is the one place that
+// turns queue-shaped requests into sqlite instead of leaking sql into control
+// handlers and scheduler code.
 #pragma once
 
 #include <expected>
@@ -15,6 +18,7 @@ namespace rlbs {
 
 enum class QueueRepositoryOperation {
     insert_queue,
+    update_queue,
     read_queue,
     list_queues,
 };
@@ -40,6 +44,12 @@ class QueueRepository {
 
     [[nodiscard]] std::expected<std::vector<BatchQueue>, QueueRepositoryError>
     all() const;
+
+    [[nodiscard]] std::expected<BatchQueue, QueueRepositoryError>
+    set_started(std::string_view name, bool started);
+
+    [[nodiscard]] std::expected<BatchQueue, QueueRepositoryError>
+    set_enabled(std::string_view name, bool enabled);
 
   private:
     sqlite3* connection_{nullptr};

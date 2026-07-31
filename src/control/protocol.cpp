@@ -1,6 +1,10 @@
 #include <rlbs/control/protocol.hpp>
 
+// control packets are deliberately explicit and mildly tedious. silently
+// guessing an admin request after a version mismatch would be much worse than
+// making both sides restart and agree on the exact bytes.
 #include <limits>
+#include <bit>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -9,17 +13,22 @@ namespace rlbs {
 namespace {
 
 constexpr std::uint32_t protocol_magic = 0x524c4253;
-constexpr std::uint16_t protocol_version = 3;
+constexpr std::uint16_t protocol_version = 4;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
 constexpr std::uint8_t cancel_request_type = 4;
 constexpr std::uint8_t nodes_request_type = 5;
+constexpr std::uint8_t queues_request_type = 6;
+constexpr std::uint8_t add_queue_request_type = 7;
+constexpr std::uint8_t update_queue_request_type = 8;
 constexpr std::uint8_t submit_response_type = 129;
 constexpr std::uint8_t queue_response_type = 130;
 constexpr std::uint8_t status_response_type = 131;
 constexpr std::uint8_t cancel_response_type = 132;
 constexpr std::uint8_t nodes_response_type = 133;
+constexpr std::uint8_t queues_response_type = 134;
+constexpr std::uint8_t queue_updated_response_type = 135;
 constexpr std::uint8_t error_response_type = 255;
 constexpr std::uint32_t max_collection_size = 65536;
 
@@ -617,6 +626,81 @@ decode_optional_duration(Reader& reader) {
 }
 
 [[nodiscard]] std::expected<void, ProtocolError>
+encode_batch_queue(Writer& writer, const BatchQueue& queue) {
+    if (auto written = writer.text(queue.name); !written) {
+        return written;
+    }
+
+    const auto signed_priority = static_cast<std::int32_t>(queue.priority);
+    writer.integer32(std::bit_cast<std::uint32_t>(signed_priority));
+    writer.integer8(queue.enabled ? 1 : 0);
+    writer.integer8(queue.started ? 1 : 0);
+    writer.integer8(queue.max_running ? 1 : 0);
+
+    if (queue.max_running) {
+        writer.integer32(*queue.max_running);
+    }
+
+    return {};
+}
+
+[[nodiscard]] std::expected<BatchQueue, ProtocolError>
+decode_batch_queue(Reader& reader) {
+    auto name = reader.text();
+    auto raw_priority = reader.integer32();
+    auto enabled = reader.integer8();
+    auto started = reader.integer8();
+    auto has_max_running = reader.integer8();
+
+    if (!name) {
+        return std::unexpected{std::move(name.error())};
+    }
+    if (!raw_priority) {
+        return std::unexpected{std::move(raw_priority.error())};
+    }
+    if (!enabled) {
+        return std::unexpected{std::move(enabled.error())};
+    }
+    if (!started) {
+        return std::unexpected{std::move(started.error())};
+    }
+    if (!has_max_running) {
+        return std::unexpected{std::move(has_max_running.error())};
+    }
+    if (*enabled > 1 || *started > 1 || *has_max_running > 1) {
+        return std::unexpected{
+            error(ProtocolOperation::decode,
+                  "queue flags are not boolean")};
+    }
+
+    std::optional<std::uint32_t> max_running;
+
+    if (*has_max_running != 0) {
+        auto limit = reader.integer32();
+
+        if (!limit) {
+            return std::unexpected{std::move(limit.error())};
+        }
+        if (*limit == 0) {
+            return std::unexpected{
+                error(ProtocolOperation::decode,
+                      "queue max_running must be greater than zero")};
+        }
+
+        max_running = *limit;
+    }
+
+    return BatchQueue{
+        .name = std::move(*name),
+        .priority = static_cast<int>(
+            std::bit_cast<std::int32_t>(*raw_priority)),
+        .enabled = *enabled != 0,
+        .started = *started != 0,
+        .max_running = max_running,
+    };
+}
+
+[[nodiscard]] std::expected<void, ProtocolError>
 encode_job_summary(Writer& writer, const JobSummary& job) {
     writer.integer64(job.id);
 
@@ -961,8 +1045,25 @@ encode_request(const ControlRequest& request) {
     } else if (const auto* cancel = std::get_if<CancelRequest>(&request)) {
         write_header(payload, cancel_request_type);
         payload.integer64(cancel->job_id);
-    } else {
+    } else if (std::holds_alternative<NodesRequest>(request)) {
         write_header(payload, nodes_request_type);
+    } else if (std::holds_alternative<QueuesRequest>(request)) {
+        write_header(payload, queues_request_type);
+    } else if (const auto* add = std::get_if<AddQueueRequest>(&request)) {
+        write_header(payload, add_queue_request_type);
+
+        if (auto encoded = encode_batch_queue(payload, add->queue); !encoded) {
+            return std::unexpected{std::move(encoded.error())};
+        }
+    } else {
+        const auto& update = std::get<UpdateQueueRequest>(request);
+        write_header(payload, update_queue_request_type);
+
+        if (auto written = payload.text(update.name); !written) {
+            return std::unexpected{std::move(written.error())};
+        }
+
+        payload.integer8(static_cast<std::uint8_t>(update.action));
     }
 
     return finish_frame(std::move(payload));
@@ -1012,6 +1113,36 @@ decode_request(const std::vector<std::byte>& frame) {
         request = CancelRequest{.job_id = *job_id};
     } else if (*type == nodes_request_type) {
         request = NodesRequest{};
+    } else if (*type == queues_request_type) {
+        request = QueuesRequest{};
+    } else if (*type == add_queue_request_type) {
+        auto queue = decode_batch_queue(reader);
+
+        if (!queue) {
+            return std::unexpected{std::move(queue.error())};
+        }
+
+        request = AddQueueRequest{.queue = std::move(*queue)};
+    } else if (*type == update_queue_request_type) {
+        auto name = reader.text();
+        auto action = reader.integer8();
+
+        if (!name) {
+            return std::unexpected{std::move(name.error())};
+        }
+        if (!action) {
+            return std::unexpected{std::move(action.error())};
+        }
+        if (*action > static_cast<std::uint8_t>(QueueAction::disable)) {
+            return std::unexpected{
+                error(ProtocolOperation::decode,
+                      "queue action is unknown")};
+        }
+
+        request = UpdateQueueRequest{
+            .name = std::move(*name),
+            .action = static_cast<QueueAction>(*action),
+        };
     } else {
         return std::unexpected{
             error(ProtocolOperation::decode, "unknown control request type")};
@@ -1068,6 +1199,28 @@ encode_response(const ControlResponse& response) {
             if (auto encoded = encode_node_summary(payload, node); !encoded) {
                 return std::unexpected{std::move(encoded.error())};
             }
+        }
+    } else if (const auto* queues = std::get_if<QueuesResponse>(&response)) {
+        if (queues->queues.size() > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::encode, "queue list is too large")};
+        }
+
+        write_header(payload, queues_response_type);
+        payload.integer32(static_cast<std::uint32_t>(queues->queues.size()));
+
+        for (const auto& queue : queues->queues) {
+            if (auto encoded = encode_batch_queue(payload, queue); !encoded) {
+                return std::unexpected{std::move(encoded.error())};
+            }
+        }
+    } else if (const auto* updated =
+                   std::get_if<QueueUpdatedResponse>(&response)) {
+        write_header(payload, queue_updated_response_type);
+
+        if (auto encoded = encode_batch_queue(payload, updated->queue);
+            !encoded) {
+            return std::unexpected{std::move(encoded.error())};
         }
     } else {
         write_header(payload, error_response_type);
@@ -1173,6 +1326,40 @@ decode_response(const std::vector<std::byte>& frame) {
         }
 
         response = NodesResponse{.nodes = std::move(nodes)};
+    } else if (*type == queues_response_type) {
+        auto count = reader.integer32();
+
+        if (!count) {
+            return std::unexpected{std::move(count.error())};
+        }
+        if (*count > max_collection_size) {
+            return std::unexpected{
+                error(ProtocolOperation::decode,
+                      "queue list is too large")};
+        }
+
+        std::vector<BatchQueue> queues;
+        queues.reserve(*count);
+
+        for (std::uint32_t index = 0; index < *count; ++index) {
+            auto queue = decode_batch_queue(reader);
+
+            if (!queue) {
+                return std::unexpected{std::move(queue.error())};
+            }
+
+            queues.push_back(std::move(*queue));
+        }
+
+        response = QueuesResponse{.queues = std::move(queues)};
+    } else if (*type == queue_updated_response_type) {
+        auto queue = decode_batch_queue(reader);
+
+        if (!queue) {
+            return std::unexpected{std::move(queue.error())};
+        }
+
+        response = QueueUpdatedResponse{.queue = std::move(*queue)};
     } else if (*type == error_response_type) {
         auto message = reader.text();
 

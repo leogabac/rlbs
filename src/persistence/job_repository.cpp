@@ -483,7 +483,7 @@ next_queue_sequence(sqlite3* connection) {
 [[nodiscard]] std::expected<void, RepositoryError>
 validate_queue(sqlite3* connection, std::string_view queue) {
     auto statement = prepare(connection,
-                             "SELECT 1 FROM queues WHERE name = ?;",
+                             "SELECT enabled FROM queues WHERE name = ?;",
                              RepositoryOperation::validate_queue);
 
     if (!statement) {
@@ -499,8 +499,15 @@ validate_queue(sqlite3* connection, std::string_view queue) {
 
     const int result = sqlite3_step(statement->get());
 
-    if (result == SQLITE_ROW) {
+    if (result == SQLITE_ROW &&
+        sqlite3_column_int(statement->get(), 0) != 0) {
         return {};
+    }
+    if (result == SQLITE_ROW) {
+        return std::unexpected{
+            error(connection, RepositoryOperation::validate_queue,
+                  SQLITE_CONSTRAINT,
+                  "queue is disabled: " + std::string{queue})};
     }
     if (result == SQLITE_DONE) {
         return std::unexpected{

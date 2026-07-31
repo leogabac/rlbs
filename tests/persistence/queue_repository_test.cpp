@@ -207,6 +207,33 @@ void test_rejects_invalid_or_duplicate_queues() {
     expect(!zero_limit, "zero running limit is rejected");
 }
 
+void test_updates_queue_switches() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "switches.db");
+
+    expect(database.has_value(), "queue switches database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::QueueRepository repository{*database};
+    const auto stopped = repository.set_started("default", false);
+    const auto disabled = repository.set_enabled("default", false);
+
+    expect(stopped && !stopped->started, "queue can be stopped");
+    expect(disabled && !disabled->enabled, "queue can be disabled");
+
+    const auto restarted = repository.set_started("default", true);
+    const auto enabled = repository.set_enabled("default", true);
+    expect(restarted && restarted->started, "queue can be restarted");
+    expect(enabled && enabled->enabled, "queue can be enabled again");
+
+    expect(!repository.set_started("missing", false),
+           "updating a missing queue is rejected");
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +241,7 @@ int main() {
     test_add_find_and_reopen();
     test_lists_priority_then_name();
     test_rejects_invalid_or_duplicate_queues();
+    test_updates_queue_switches();
 
     if (failures == 0) {
         std::cout << "all queue repository tests passed\n";

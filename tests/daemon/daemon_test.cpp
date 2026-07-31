@@ -2,7 +2,6 @@
 #include <rlbs/daemon/config.hpp>
 #include <rlbs/persistence/database.hpp>
 #include <rlbs/persistence/job_repository.hpp>
-#include <rlbs/persistence/queue_repository.hpp>
 
 #include <array>
 #include <cerrno>
@@ -277,24 +276,6 @@ void test_real_cli_submits_to_daemon(
         return;
     }
 
-    rlbs::QueueRepository queues{*database};
-    const auto short_queue = queues.add({
-        .name = "short",
-        .priority = 100,
-        .enabled = true,
-        .started = true,
-        .max_running = std::nullopt,
-    });
-    const auto long_queue = queues.add({
-        .name = "long",
-        .priority = 10,
-        .enabled = true,
-        .started = true,
-        .max_running = std::nullopt,
-    });
-    expect(short_queue && long_queue,
-           "daemon integration queues are created");
-
     rlbs::JobRepository repository{*database};
     const pid_t child = ::fork();
 
@@ -329,6 +310,63 @@ void test_real_cli_submits_to_daemon(
     if (!socket_ready) {
         return;
     }
+
+    const auto add_short = run_cli_command(
+        cli_executable, {"queues", "add", "short", "--priority", "100",
+                         "--max-running", "1", "--socket",
+                         socket_path.string()});
+    const auto add_long = run_cli_command(
+        cli_executable, {"queues", "add", "long", "--priority", "10",
+                         "--socket", socket_path.string()});
+    expect(add_short.exit_code == 0 &&
+               add_short.output == "queue short added\n",
+           "real rlbs adds the short queue");
+    expect(add_long.exit_code == 0 &&
+               add_long.output == "queue long added\n",
+           "real rlbs adds the long queue");
+
+    const auto queue_list = run_cli_command(
+        cli_executable, {"queues", "--socket", socket_path.string()});
+    expect(queue_list.exit_code == 0, "real rlbs lists queues");
+    expect(queue_list.output.contains("short") &&
+               queue_list.output.contains("long"),
+           "queue list includes added queues");
+
+    const auto stopped = run_cli_command(
+        cli_executable,
+        {"queues", "stop", "short", "--socket", socket_path.string()});
+    const auto started = run_cli_command(
+        cli_executable,
+        {"queues", "start", "short", "--socket", socket_path.string()});
+    expect(stopped.exit_code == 0 &&
+               stopped.output == "queue short stopped\n",
+           "real rlbs stops a queue");
+    expect(started.exit_code == 0 &&
+               started.output == "queue short started\n",
+           "real rlbs starts a queue");
+
+    const auto disabled = run_cli_command(
+        cli_executable,
+        {"queues", "disable", "short", "--socket", socket_path.string()});
+    expect(disabled.exit_code == 0 &&
+               disabled.output == "queue short disabled\n",
+           "real rlbs disables a queue");
+
+    const auto rejected = run_cli_command(
+        cli_executable,
+        {"submit", "--socket", socket_path.string(), "--queue", "short", "--",
+         "/bin/true"});
+    expect(rejected.exit_code == 1,
+           "disabled queue rejects a real cli submission");
+    expect(rejected.output.contains("queue is disabled: short"),
+           "disabled queue rejection names the queue");
+
+    const auto enabled = run_cli_command(
+        cli_executable,
+        {"queues", "enable", "short", "--socket", socket_path.string()});
+    expect(enabled.exit_code == 0 &&
+               enabled.output == "queue short enabled\n",
+           "real rlbs enables a queue");
 
     const auto submitted =
         run_cli_command(cli_executable, {

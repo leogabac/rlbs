@@ -361,6 +361,7 @@ commands:
   status JOB_ID          show one job
   cancel JOB_ID          cancel one job
   nodes                  show node capacity
+  queues                 manage batch queues
 
 general:
   --version              show the rlbs version

@@ -194,6 +194,7 @@ receive_frame(int socket) {
 
 [[nodiscard]] ControlResponse handle_request(const ControlRequest& request,
                                              JobRepository& repository,
+                                             QueueRepository& queues,
                                              LocalCoordinator& coordinator,
                                              Logger* logger) {
     // transport ends here. every command uses repository methods instead of
@@ -269,6 +270,60 @@ receive_frame(int socket) {
         return CancelResponse{.job_id = cancel->job_id};
     }
 
+    if (std::holds_alternative<QueuesRequest>(request)) {
+        auto stored = queues.all();
+
+        if (!stored) {
+            return ErrorResponse{.message = stored.error().message};
+        }
+
+        return QueuesResponse{.queues = std::move(*stored)};
+    }
+
+    if (const auto* add = std::get_if<AddQueueRequest>(&request)) {
+        auto added = queues.add(add->queue);
+
+        if (!added) {
+            return ErrorResponse{.message = added.error().message};
+        }
+
+        if (logger != nullptr) {
+            logger->info("control", "added queue " + added->name);
+        }
+
+        return QueueUpdatedResponse{.queue = std::move(*added)};
+    }
+
+    if (const auto* update = std::get_if<UpdateQueueRequest>(&request)) {
+        std::expected<BatchQueue, QueueRepositoryError> changed =
+            std::unexpected{QueueRepositoryError{}};
+
+        switch (update->action) {
+        case QueueAction::start:
+            changed = queues.set_started(update->name, true);
+            break;
+        case QueueAction::stop:
+            changed = queues.set_started(update->name, false);
+            break;
+        case QueueAction::enable:
+            changed = queues.set_enabled(update->name, true);
+            break;
+        case QueueAction::disable:
+            changed = queues.set_enabled(update->name, false);
+            break;
+        }
+
+        if (!changed) {
+            return ErrorResponse{.message = changed.error().message};
+        }
+
+        if (logger != nullptr) {
+            logger->info("control", "updated queue " + changed->name);
+        }
+
+        return QueueUpdatedResponse{.queue = std::move(*changed)};
+    }
+
     const auto& node = coordinator.local_node();
     return NodesResponse{
         .nodes =
@@ -298,22 +353,24 @@ void send_error_response(int socket, std::string_view message) {
 
 ControlServer::ControlServer(int socket, std::filesystem::path path,
                              JobRepository& repository,
+                             QueueRepository& queues,
                              LocalCoordinator& coordinator, Logger* logger)
     : socket_{socket}, path_{std::move(path)}, repository_{&repository},
-      coordinator_{&coordinator}, logger_{logger}, owns_path_{true} {}
+      queues_{&queues}, coordinator_{&coordinator}, logger_{logger},
+      owns_path_{true} {}
 
 ControlServer::ControlServer(ControlServer&& other) noexcept
     : socket_{std::exchange(other.socket_, -1)}, path_{std::move(other.path_)},
-      repository_{other.repository_}, coordinator_{other.coordinator_},
-      logger_{other.logger_},
+      repository_{other.repository_}, queues_{other.queues_},
+      coordinator_{other.coordinator_}, logger_{other.logger_},
       owns_path_{std::exchange(other.owns_path_, false)} {}
 
 ControlServer::~ControlServer() { close(); }
 
 std::expected<ControlServer, ControlSocketError>
 ControlServer::listen(const std::filesystem::path& path,
-                      JobRepository& repository, LocalCoordinator& coordinator,
-                      Logger* logger) {
+                      JobRepository& repository, QueueRepository& queues,
+                      LocalCoordinator& coordinator, Logger* logger) {
     // order matters: validate the address, deal with a stale name, create the
     // fd, bind the name, then listen. later failures undo the filesystem entry
     // so the next startup is not punished for this one
@@ -365,7 +422,7 @@ ControlServer::listen(const std::filesystem::path& path,
                                      listen_error, path.string())};
     }
 
-    return ControlServer{socket.release(), path, repository, coordinator,
+    return ControlServer{socket.release(), path, repository, queues, coordinator,
                          logger};
 }
 
@@ -416,7 +473,8 @@ void ControlServer::handle_client(int client_socket) {
     }
 
     auto response = encode_response(
-        handle_request(*request, *repository_, *coordinator_, logger_));
+        handle_request(*request, *repository_, *queues_, *coordinator_,
+                       logger_));
 
     if (!response) {
         send_error_response(client_socket, response.error().message);
@@ -525,6 +583,58 @@ ControlClient::nodes() const {
     return std::unexpected{
         error(ControlSocketOperation::server_response, EPROTO,
               "daemon returned the wrong response to nodes")};
+}
+
+std::expected<std::vector<BatchQueue>, ControlSocketError>
+ControlClient::queues() const {
+    auto response = request(ControlRequest{QueuesRequest{}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* queues = std::get_if<QueuesResponse>(&*response)) {
+        return std::move(queues->queues);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to queues")};
+}
+
+std::expected<BatchQueue, ControlSocketError>
+ControlClient::add_queue(const BatchQueue& queue) const {
+    auto response =
+        request(ControlRequest{AddQueueRequest{.queue = queue}});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* updated = std::get_if<QueueUpdatedResponse>(&*response)) {
+        return std::move(updated->queue);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to queue add")};
+}
+
+std::expected<BatchQueue, ControlSocketError>
+ControlClient::update_queue(std::string name, QueueAction action) const {
+    auto response = request(ControlRequest{UpdateQueueRequest{
+        .name = std::move(name),
+        .action = action,
+    }});
+
+    if (!response) {
+        return std::unexpected{std::move(response.error())};
+    }
+    if (auto* updated = std::get_if<QueueUpdatedResponse>(&*response)) {
+        return std::move(updated->queue);
+    }
+
+    return std::unexpected{
+        error(ControlSocketOperation::server_response, EPROTO,
+              "daemon returned the wrong response to queue update")};
 }
 
 std::expected<ControlResponse, ControlSocketError>

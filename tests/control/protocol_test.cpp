@@ -129,6 +129,62 @@ void test_query_requests_round_trip() {
     }
 }
 
+void test_queue_admin_requests_round_trip() {
+    const auto list =
+        rlbs::encode_request(rlbs::ControlRequest{rlbs::QueuesRequest{}});
+    const auto add = rlbs::encode_request(rlbs::ControlRequest{
+        rlbs::AddQueueRequest{
+            .queue =
+                {
+                    .name = "short",
+                    .priority = -10,
+                    .enabled = true,
+                    .started = false,
+                    .max_running = 4,
+                },
+        },
+    });
+    const auto update = rlbs::encode_request(rlbs::ControlRequest{
+        rlbs::UpdateQueueRequest{
+            .name = "short",
+            .action = rlbs::QueueAction::disable,
+        },
+    });
+
+    expect(list.has_value(), "queue admin list request encodes");
+    expect(add.has_value(), "queue admin add request encodes");
+    expect(update.has_value(), "queue admin update request encodes");
+
+    if (list) {
+        const auto decoded = rlbs::decode_request(*list);
+        expect(decoded &&
+                   std::holds_alternative<rlbs::QueuesRequest>(*decoded),
+               "queue admin list keeps its type");
+    }
+    if (add) {
+        const auto decoded = rlbs::decode_request(*add);
+        expect(decoded.has_value(), "queue admin add decodes");
+
+        if (decoded) {
+            const auto& queue =
+                std::get<rlbs::AddQueueRequest>(*decoded).queue;
+            expect(queue.name == "short", "queue admin add keeps its name");
+            expect(queue.priority == -10,
+                   "queue admin add keeps signed priority");
+            expect(!queue.started, "queue admin add keeps started state");
+            expect(queue.max_running == 4,
+                   "queue admin add keeps its running limit");
+        }
+    }
+    if (update) {
+        const auto decoded = rlbs::decode_request(*update);
+        expect(decoded &&
+                   std::get<rlbs::UpdateQueueRequest>(*decoded).action ==
+                       rlbs::QueueAction::disable,
+               "queue admin update keeps its action");
+    }
+}
+
 void test_responses_round_trip() {
     const auto submitted =
         rlbs::encode_response(rlbs::SubmitResponse{.job_id = 42});
@@ -283,6 +339,52 @@ void test_query_responses_round_trip() {
     }
 }
 
+void test_queue_admin_responses_round_trip() {
+    const auto listed = rlbs::encode_response(rlbs::QueuesResponse{
+        .queues =
+            {
+                {
+                    .name = "short",
+                    .priority = 100,
+                    .enabled = true,
+                    .started = true,
+                    .max_running = 4,
+                },
+            },
+    });
+    const auto updated = rlbs::encode_response(rlbs::QueueUpdatedResponse{
+        .queue =
+            {
+                .name = "short",
+                .priority = 100,
+                .enabled = false,
+                .started = true,
+                .max_running = 4,
+            },
+    });
+
+    expect(listed.has_value(), "queue admin list response encodes");
+    expect(updated.has_value(), "queue admin update response encodes");
+
+    if (listed) {
+        const auto decoded = rlbs::decode_response(*listed);
+        expect(decoded &&
+                   std::get<rlbs::QueuesResponse>(*decoded).queues.size() == 1,
+               "queue admin list response keeps every queue");
+    }
+    if (updated) {
+        const auto decoded = rlbs::decode_response(*updated);
+        expect(decoded.has_value(), "queue admin update response decodes");
+
+        if (decoded) {
+            const auto& queue =
+                std::get<rlbs::QueueUpdatedResponse>(*decoded).queue;
+            expect(!queue.enabled,
+                   "queue admin update response keeps enabled state");
+        }
+    }
+}
+
 void test_bad_frames_are_rejected() {
     auto frame = rlbs::encode_request(
         rlbs::ControlRequest{rlbs::SubmitRequest{.spec = example_spec()}});
@@ -304,8 +406,10 @@ void test_bad_frames_are_rejected() {
 int main() {
     test_submit_request_round_trip();
     test_query_requests_round_trip();
+    test_queue_admin_requests_round_trip();
     test_responses_round_trip();
     test_query_responses_round_trip();
+    test_queue_admin_responses_round_trip();
     test_bad_frames_are_rejected();
 
     if (failures == 0) {

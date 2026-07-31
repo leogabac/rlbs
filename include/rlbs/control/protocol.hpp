@@ -1,3 +1,6 @@
+// this is the boring shared language between rlbs and rlbsd. queue management
+// belongs here so the cli never opens the database directly and future remote
+// control does not need a second set of admin semantics.
 #pragma once
 
 #include <chrono>
@@ -10,6 +13,7 @@
 
 #include <rlbs/core/job.hpp>
 #include <rlbs/core/node.hpp>
+#include <rlbs/core/batch_queue.hpp>
 #include <rlbs/core/types.hpp>
 
 namespace rlbs {
@@ -42,8 +46,28 @@ struct CancelRequest {
 
 struct NodesRequest {};
 
-using ControlRequest = std::variant<SubmitRequest, QueueRequest, StatusRequest,
-                                    CancelRequest, NodesRequest>;
+struct QueuesRequest {};
+
+struct AddQueueRequest {
+    BatchQueue queue;
+};
+
+enum class QueueAction : std::uint8_t {
+    start,
+    stop,
+    enable,
+    disable,
+};
+
+struct UpdateQueueRequest {
+    std::string name;
+    QueueAction action{QueueAction::start};
+};
+
+using ControlRequest =
+    std::variant<SubmitRequest, QueueRequest, StatusRequest, CancelRequest,
+                 NodesRequest, QueuesRequest, AddQueueRequest,
+                 UpdateQueueRequest>;
 
 struct SubmitResponse {
     JobId job_id{0};
@@ -87,13 +111,22 @@ struct NodesResponse {
     std::vector<NodeSummary> nodes;
 };
 
+struct QueuesResponse {
+    std::vector<BatchQueue> queues;
+};
+
+struct QueueUpdatedResponse {
+    BatchQueue queue;
+};
+
 struct ErrorResponse {
     std::string message;
 };
 
 using ControlResponse =
     std::variant<SubmitResponse, QueueResponse, StatusResponse, CancelResponse,
-                 NodesResponse, ErrorResponse>;
+                 NodesResponse, QueuesResponse, QueueUpdatedResponse,
+                 ErrorResponse>;
 
 // frames carry their own size even though unix seqpacket already has packet
 // boundaries. tcp can reuse the exact bytes later without inventing framing

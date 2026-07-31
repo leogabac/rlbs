@@ -1,3 +1,6 @@
+// the unix socket is the trust and ownership boundary for every local command.
+// clients ask; the daemon owns repositories and decides. keeping that direction
+// obvious matters even more once user credentials and queue acls arrive.
 #pragma once
 
 #include <cstddef>
@@ -8,6 +11,7 @@
 #include <rlbs/control/protocol.hpp>
 #include <rlbs/logging/logger.hpp>
 #include <rlbs/persistence/job_repository.hpp>
+#include <rlbs/persistence/queue_repository.hpp>
 
 namespace rlbs {
 
@@ -41,7 +45,8 @@ class ControlServer {
   public:
     [[nodiscard]] static std::expected<ControlServer, ControlSocketError>
     listen(const std::filesystem::path& path, JobRepository& repository,
-           LocalCoordinator& coordinator, Logger* logger = nullptr);
+           QueueRepository& queues, LocalCoordinator& coordinator,
+           Logger* logger = nullptr);
 
     ControlServer(const ControlServer&) = delete;
     ControlServer& operator=(const ControlServer&) = delete;
@@ -59,14 +64,15 @@ class ControlServer {
 
   private:
     ControlServer(int socket, std::filesystem::path path,
-                  JobRepository& repository, LocalCoordinator& coordinator,
-                  Logger* logger);
+                  JobRepository& repository, QueueRepository& queues,
+                  LocalCoordinator& coordinator, Logger* logger);
 
     void handle_client(int client_socket);
 
     int socket_{-1};
     std::filesystem::path path_;
     JobRepository* repository_{nullptr};
+    QueueRepository* queues_{nullptr};
     LocalCoordinator* coordinator_{nullptr};
     Logger* logger_{nullptr};
     bool owns_path_{false};
@@ -92,6 +98,15 @@ class ControlClient {
 
     [[nodiscard]] std::expected<std::vector<NodeSummary>, ControlSocketError>
     nodes() const;
+
+    [[nodiscard]] std::expected<std::vector<BatchQueue>, ControlSocketError>
+    queues() const;
+
+    [[nodiscard]] std::expected<BatchQueue, ControlSocketError>
+    add_queue(const BatchQueue& queue) const;
+
+    [[nodiscard]] std::expected<BatchQueue, ControlSocketError>
+    update_queue(std::string name, QueueAction action) const;
 
   private:
     [[nodiscard]] std::expected<ControlResponse, ControlSocketError>

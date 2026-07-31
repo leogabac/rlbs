@@ -129,6 +129,7 @@ add_library(rlbs_cli
     src/cli/native_script.cpp
     src/cli/pbs_script.cpp
     src/cli/query.cpp
+    src/cli/queues.cpp
     src/cli/submit.cpp
 )
 
@@ -413,6 +414,20 @@ if(BUILD_TESTING)
     add_test(
         NAME rlbs_query_cli_tests
         COMMAND rlbs_query_cli_tests
+    )
+
+    add_executable(rlbs_queues_cli_tests
+        tests/cli/queues_test.cpp
+    )
+
+    target_link_libraries(rlbs_queues_cli_tests
+        PRIVATE
+            rlbs_cli
+    )
+
+    add_test(
+        NAME rlbs_queues_cli_tests
+        COMMAND rlbs_queues_cli_tests
     )
 
     set_tests_properties(
