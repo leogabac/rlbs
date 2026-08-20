@@ -169,6 +169,8 @@ sudo systemctl restart rlbsd
 ```
 
 The database is durable at `/var/lib/rlbs/rlbs.db`; restarting the daemon does
-not clear completed history. An abrupt host crash is a separate limitation for
-the current MVP: active records are not yet reconciled on startup. Avoid forced
-service kills, and treat startup recovery as the next reliability feature.
+not clear completed history. After an abrupt host crash, the next startup marks
+stale `assigned`, `starting`, and `running` records as failed and records why
+in their job history. Pending jobs remain queued. Do not `SIGKILL` a standalone
+daemon while its jobs may still be alive; cancel those jobs or stop the service
+cleanly first.

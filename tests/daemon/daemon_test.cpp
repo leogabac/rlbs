@@ -380,6 +380,107 @@ void test_config_parser() {
     expect(!missing_group, "unknown socket group is rejected");
 }
 
+void test_daemon_recovers_interrupted_jobs(
+    const std::filesystem::path& daemon_executable) {
+    TemporaryDirectory temporary;
+    const auto database_path = temporary.path() / "recovery.db";
+    const auto socket_path = temporary.path() / "recovery.sock";
+    auto database = rlbs::SqliteDatabase::open(database_path);
+
+    expect(database.has_value(), "daemon recovery database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto submitted = repository.submit(
+        {
+            .name = "interrupted",
+            .resources = {.cpus = 1, .memory_mb = 0, .gpus = 0},
+            .argv = {"/bin/true"},
+            .working_directory = temporary.path(),
+            .environment = {},
+            .inherit_environment = true,
+            .stdout_path = std::nullopt,
+            .stderr_path = std::nullopt,
+            .append_output = false,
+            .walltime = std::nullopt,
+            .queue = "default",
+        },
+        {
+            .user_id = static_cast<std::uint32_t>(::getuid()),
+            .group_id = static_cast<std::uint32_t>(::getgid()),
+        });
+    expect(submitted.has_value(), "interrupted recovery job submits");
+
+    if (!submitted) {
+        return;
+    }
+
+    expect(repository.transition(
+               submitted->id,
+               {
+                   .state = rlbs::JobState::assigned,
+                   .assigned_node = "local",
+                   .result = std::nullopt,
+                   .detail = "the old daemon picked local",
+               })
+               .has_value() &&
+               repository.transition(
+                   submitted->id,
+                   {
+                       .state = rlbs::JobState::starting,
+                       .assigned_node = std::nullopt,
+                       .result = std::nullopt,
+                       .detail = "the old daemon was launching it",
+                   })
+                   .has_value(),
+           "interrupted recovery job reaches a stale state");
+
+    const pid_t child = ::fork();
+
+    if (child == 0) {
+        ::execl(daemon_executable.c_str(), daemon_executable.c_str(),
+                "--database", database_path.c_str(), "--socket",
+                socket_path.c_str(), "--cpus", "1", "--tick-ms", "5",
+                static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+
+    expect(child > 0, "recovery daemon process starts");
+
+    if (child <= 0) {
+        return;
+    }
+
+    DaemonProcess daemon{child};
+    bool socket_ready = false;
+
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        if (std::filesystem::exists(socket_path)) {
+            socket_ready = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    expect(socket_ready, "recovery daemon creates its socket");
+
+    const auto recovered = repository.find(submitted->id);
+    expect(recovered && *recovered &&
+               (*recovered)->state == rlbs::JobState::failed,
+           "daemon startup marks the stale job failed");
+
+    const auto events = repository.events(submitted->id);
+    expect(events && !events->empty() && events->back().detail &&
+               events->back().detail->contains("daemon restarted"),
+           "daemon startup writes the recovery event");
+
+    expect(daemon.stop(), "recovery daemon exits cleanly");
+}
+
 void test_real_cli_submits_to_daemon(
     const std::filesystem::path& daemon_executable,
     const std::filesystem::path& cli_executable) {
@@ -786,6 +887,7 @@ int main(int argc, char* argv[]) {
     test_config_parser();
 
     if (argc == 3) {
+        test_daemon_recovers_interrupted_jobs(argv[1]);
         test_real_cli_submits_to_daemon(argv[1], argv[2]);
     } else {
         expect(false, "daemon test receives daemon and cli executable paths");

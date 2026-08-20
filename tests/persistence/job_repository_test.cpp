@@ -358,6 +358,112 @@ void test_rejects_disabled_queue() {
            "disabled queue failure identifies queue validation");
 }
 
+void test_recovers_interrupted_jobs() {
+    TemporaryDirectory temporary;
+    auto database =
+        rlbs::SqliteDatabase::open(temporary.path() / "recovery.db");
+
+    expect(database.has_value(), "recovery database opens");
+
+    if (!database) {
+        return;
+    }
+
+    rlbs::JobRepository repository{*database};
+    const auto pending = repository.submit(example_spec("still queued"), test_owner);
+    const auto assigned = repository.submit(example_spec("was assigned"), test_owner);
+    const auto starting = repository.submit(example_spec("was starting"), test_owner);
+    const auto running = repository.submit(example_spec("was running"), test_owner);
+
+    expect(pending && assigned && starting && running,
+           "recovery jobs submit");
+
+    if (!pending || !assigned || !starting || !running) {
+        return;
+    }
+
+    expect(repository.transition(
+               assigned->id,
+               {
+                   .state = rlbs::JobState::assigned,
+                   .assigned_node = "local",
+                   .result = std::nullopt,
+                   .detail = "old daemon assigned this",
+               })
+               .has_value(),
+           "recovery assigned job reaches assigned state");
+    expect(repository.transition(
+               starting->id,
+               {
+                   .state = rlbs::JobState::assigned,
+                   .assigned_node = "local",
+                   .result = std::nullopt,
+                   .detail = std::nullopt,
+               })
+               .has_value() &&
+               repository.transition(
+                   starting->id,
+                   {
+                       .state = rlbs::JobState::starting,
+                       .assigned_node = std::nullopt,
+                       .result = std::nullopt,
+                       .detail = "old daemon began launch",
+                   })
+                   .has_value(),
+           "recovery starting job reaches starting state");
+    expect(repository.transition(
+               running->id,
+               {
+                   .state = rlbs::JobState::assigned,
+                   .assigned_node = "local",
+                   .result = std::nullopt,
+                   .detail = std::nullopt,
+               })
+               .has_value() &&
+               repository.transition(
+                   running->id,
+                   {
+                       .state = rlbs::JobState::starting,
+                       .assigned_node = std::nullopt,
+                       .result = std::nullopt,
+                       .detail = std::nullopt,
+                   })
+                   .has_value() &&
+               repository.transition(
+                   running->id,
+                   {
+                       .state = rlbs::JobState::running,
+                       .assigned_node = std::nullopt,
+                       .result = std::nullopt,
+                       .detail = "old daemon launched this",
+                   })
+                   .has_value(),
+           "recovery running job reaches running state");
+
+    const auto recovered = repository.recover_interrupted_jobs();
+    expect(recovered && recovered->size() == 3,
+           "recovery only terminalizes jobs that had local work");
+
+    const auto queued_after_recovery = repository.find(pending->id);
+    expect(queued_after_recovery && *queued_after_recovery &&
+               (*queued_after_recovery)->state == rlbs::JobState::pending,
+           "recovery keeps pending work queued");
+
+    for (const auto job_id : {assigned->id, starting->id, running->id}) {
+        const auto stored = repository.find(job_id);
+        expect(stored && *stored &&
+                   (*stored)->state == rlbs::JobState::failed,
+               "recovery marks stale live jobs failed");
+
+        const auto events = repository.events(job_id);
+        expect(events && !events->empty() &&
+                   events->back().state == rlbs::JobState::failed &&
+                   events->back().detail &&
+                   events->back().detail->contains("daemon restarted"),
+               "recovery records why the stale job failed");
+    }
+}
+
 void test_transitions_store_results_and_events() {
     TemporaryDirectory temporary;
     auto database =
@@ -573,6 +679,7 @@ int main() {
     test_failed_submission_rolls_back();
     test_rejects_unknown_queue();
     test_rejects_disabled_queue();
+    test_recovers_interrupted_jobs();
     test_transitions_store_results_and_events();
     test_invalid_transition_changes_nothing();
     test_event_failure_rolls_back_state();

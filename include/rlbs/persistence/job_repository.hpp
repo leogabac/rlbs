@@ -69,6 +69,12 @@ class JobRepository {
     [[nodiscard]] std::expected<std::vector<Job>, RepositoryError>
     schedulable() const;
 
+    // call this once before a fresh daemon starts scheduling. live records
+    // cannot survive a daemon crash honestly: their process handles died with
+    // the old daemon, so leaving them running would reserve the node forever.
+    [[nodiscard]] std::expected<std::vector<Job>, RepositoryError>
+    recover_interrupted_jobs();
+
     [[nodiscard]] std::expected<std::vector<Job>, RepositoryError> all() const;
 
     [[nodiscard]] std::expected<Job, RepositoryError>

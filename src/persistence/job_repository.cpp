@@ -1131,6 +1131,43 @@ JobRepository::schedulable() const {
     return jobs;
 }
 
+std::expected<std::vector<Job>, RepositoryError>
+JobRepository::recover_interrupted_jobs() {
+    auto live_jobs = schedulable();
+
+    if (!live_jobs) {
+        return std::unexpected{std::move(live_jobs.error())};
+    }
+
+    std::vector<Job> recovered;
+
+    for (const auto& job : *live_jobs) {
+        // pending means no local process was ever launched. it is the one live
+        // looking state that we can keep, otherwise a crash would eat queued
+        // work just because the daemon happened to restart before choosing it.
+        if (job.state == JobState::pending) {
+            continue;
+        }
+
+        auto failed = transition(
+            job.id,
+            {
+                .state = JobState::failed,
+                .assigned_node = std::nullopt,
+                .result = std::nullopt,
+                .detail = "daemon restarted before local job could be reaped",
+            });
+
+        if (!failed) {
+            return std::unexpected{std::move(failed.error())};
+        }
+
+        recovered.push_back(std::move(*failed));
+    }
+
+    return recovered;
+}
+
 std::expected<std::vector<Job>, RepositoryError> JobRepository::all() const {
     auto statement =
         prepare(connection_, "SELECT id FROM jobs ORDER BY queue_sequence, id;",

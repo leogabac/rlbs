@@ -76,6 +76,24 @@ int main(int argc, char* argv[]) {
 
     rlbs::JobRepository repository{*database};
     rlbs::QueueRepository queues{*database};
+
+    // a clean shutdown waits for children, but power loss cannot. their pid
+    // handles belonged to the old daemon, so mark the stored live states failed
+    // before this coordinator sees them and pretends those resources are busy.
+    auto recovered = repository.recover_interrupted_jobs();
+
+    if (!recovered) {
+        logger.error("recovery", "could not reconcile active jobs: " +
+                                     recovered.error().message);
+        return 1;
+    }
+
+    for (const auto& job : *recovered) {
+        logger.warning("recovery", "job " + std::to_string(job.id) +
+                                       " marked failed after an unclean "
+                                       "daemon exit");
+    }
+
     rlbs::FirstFitScheduler scheduler;
     rlbs::Node local_node{config->node_id, config->capacity, config->reserved};
     rlbs::LocalCoordinator coordinator{
