@@ -61,7 +61,7 @@ sudo install -m 0644 /usr/local/share/rlbs/rlbsd.conf.example /etc/rlbs/rlbsd.co
 sudoedit /etc/rlbs/rlbsd.conf
 ```
 
-Set `node_id`, `cpus`, `memory_mb`, `gpus`, and the reserved resources for the
+Set `node-id`, `cpus`, `memory-mb`, `gpus`, and the reserved resources for the
 actual workstation. The important paths are already set up for the service:
 
 ```ini
@@ -72,8 +72,8 @@ spool = /var/lib/rlbs/spool
 ```
 
 `cpus` is the total capacity known to RLBS, not just the portion intended for
-batch work. Keep interactive capacity with `reserve_cpus` and
-`reserve_memory_mb`; the scheduler will not allocate that reserve.
+batch work. Keep interactive capacity with `reserve-cpus` and
+`reserve-memory-mb`; the scheduler will not allocate that reserve.
 
 The file format is deliberately plain `key = value`. Blank lines and `#`
 comments are allowed. `rlbsd --config PATH` loads a file, and explicit daemon
@@ -89,7 +89,9 @@ journalctl -u rlbsd -f
 ```
 
 The service creates `/run/rlbs` for the socket and `/var/lib/rlbs` for the
-database/spool. Do not make users write to either directory directly.
+database/spool. `/run/rlbs` is traversable so `rlbs` members can reach the
+socket, but the socket itself remains `root:rlbs` mode `0660`. Do not make
+users write to either directory directly.
 
 On a normal stop, RLBS closes the submission socket and waits for existing jobs
 to finish. Therefore `systemctl stop rlbsd` and `systemctl restart rlbsd` may
