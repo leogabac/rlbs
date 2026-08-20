@@ -1,0 +1,30 @@
+[Unit]
+Description=RLBS local batch scheduler
+After=local-fs.target
+
+[Service]
+Type=simple
+
+# rlbsd must start privileged so each child can become the user who submitted
+# it. do not add User= here unless the scheduler intentionally becomes private.
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/rlbsd --config /etc/rlbs/rlbsd.conf
+Restart=on-failure
+RestartSec=2s
+
+# systemd owns these parents; rlbsd only makes the socket and sqlite files in
+# them. this also clears the runtime socket after a reboot without stale-file
+# cleanup scripts trying to be clever.
+RuntimeDirectory=rlbs
+RuntimeDirectoryMode=0750
+StateDirectory=rlbs
+StateDirectoryMode=0750
+UMask=0077
+
+# sigterm makes rlbsd stop taking submissions and drain running jobs. infinity
+# is intentional for now: killing the service halfway through a job is worse
+# than letting an explicit workstation shutdown wait for it.
+KillSignal=SIGTERM
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target

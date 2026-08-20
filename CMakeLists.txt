@@ -8,6 +8,8 @@ project(
 )
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -194,21 +196,43 @@ target_link_libraries(rlbs-agent
 )
 
 install(TARGETS rlbs rlbsd rlbs-agent
-    RUNTIME DESTINATION bin
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# systemd gets the final bindir here instead of guessing where a distro package
+# or a local install put rlbsd. that guess always works until it very suddenly
+# does not.
+configure_file(
+    systemd/rlbsd.service.in
+    ${CMAKE_CURRENT_BINARY_DIR}/rlbsd.service
+    @ONLY
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/rlbsd.service
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system
+)
+
+# this is deliberately an example in share, not a config silently overwritten
+# during every upgrade. the admin has to make the actual capacity decision.
+install(FILES
+    examples/rlbsd.conf
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/rlbs
+    RENAME rlbsd.conf.example
 )
 
 # cmake has already made bin for the installed executables by this point. use
 # relative links so moving a staged install does not leave three broken paths
-install(CODE [[
+install(CODE "
     foreach(alias IN ITEMS qsub qstat qdel)
-        set(alias_path "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/${alias}")
-        file(REMOVE "${alias_path}")
+        set(alias_path \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/\${alias}\")
+        file(REMOVE \"\${alias_path}\")
         execute_process(
-            COMMAND "${CMAKE_COMMAND}" -E create_symlink rlbs "${alias_path}"
+            COMMAND \"${CMAKE_COMMAND}\" -E create_symlink rlbs \"\${alias_path}\"
             COMMAND_ERROR_IS_FATAL ANY
         )
     endforeach()
-]])
+")
 
 include(CTest)
 
