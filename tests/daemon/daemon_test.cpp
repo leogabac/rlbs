@@ -269,6 +269,101 @@ void test_config_parser() {
     expect(!rlbs::parse_daemon_config(unknown),
            "unknown daemon option is rejected");
 
+    TemporaryDirectory temporary;
+    const auto config_path = temporary.path() / "rlbsd.conf";
+
+    {
+        std::ofstream config_file{config_path};
+        config_file << "# normal comments and surrounding whitespace are fine\n"
+                    << " database = /tmp/file.db\n"
+                    << "socket = /tmp/file.sock # the test socket\n"
+                    << "spool = /tmp/file-spool\n"
+                    << "node-id = file-node\n"
+                    << "cpus = 8\n"
+                    << "memory-mb = 32000\n"
+                    << "gpus = 1\n"
+                    << "reserve-cpus = 2\n"
+                    << "reserve-memory-mb = 4000\n"
+                    << "reserve-gpus = 0\n"
+                    << "tick-ms = 50\n";
+    }
+
+    const std::string config_argument = config_path.string();
+    const std::vector<std::string_view> file_arguments{
+        "--config",
+        config_argument,
+        "--cpus",
+        "6",
+    };
+    const auto from_file = rlbs::parse_daemon_config(file_arguments);
+
+    expect(from_file.has_value(), "daemon config file parses");
+
+    if (from_file) {
+        expect(from_file->database_path == "/tmp/file.db",
+               "config file database parses");
+        expect(from_file->socket_path == "/tmp/file.sock",
+               "config file socket parses");
+        expect(from_file->spool_path == "/tmp/file-spool",
+               "config file spool parses");
+        expect(from_file->node_id == "file-node", "config file node parses");
+        expect(from_file->capacity.cpus == 6,
+               "command line overrides config file");
+        expect(from_file->capacity.memory_mb == 32000,
+               "config file memory parses");
+        expect(from_file->capacity.gpus == 1, "config file gpus parse");
+        expect(from_file->reserved.cpus == 2,
+               "config file cpu reservation parses");
+        expect(from_file->tick_interval == std::chrono::milliseconds{50},
+               "config file tick parses");
+    }
+
+    const std::vector<std::string_view> missing_config{
+        "--config",
+        "/tmp/rlbs-config-that-does-not-exist",
+    };
+    expect(!rlbs::parse_daemon_config(missing_config),
+           "missing config file is rejected");
+
+    const auto bad_config_path = temporary.path() / "bad.conf";
+    {
+        std::ofstream config_file{bad_config_path};
+        config_file << "what even is this\n";
+    }
+    const std::string bad_config_argument = bad_config_path.string();
+    const std::vector<std::string_view> bad_config{
+        "--config",
+        bad_config_argument,
+    };
+    expect(!rlbs::parse_daemon_config(bad_config),
+           "malformed config file is rejected");
+
+    const auto duplicate_config_path = temporary.path() / "duplicate.conf";
+    {
+        std::ofstream config_file{duplicate_config_path};
+        config_file << "cpus = 4\ncpus = 8\n";
+    }
+    const std::string duplicate_config_argument = duplicate_config_path.string();
+    const std::vector<std::string_view> duplicate_config{
+        "--config",
+        duplicate_config_argument,
+    };
+    expect(!rlbs::parse_daemon_config(duplicate_config),
+           "repeated config key is rejected");
+
+    const auto unknown_config_path = temporary.path() / "unknown.conf";
+    {
+        std::ofstream config_file{unknown_config_path};
+        config_file << "not-a-real-setting = 1\n";
+    }
+    const std::string unknown_config_argument = unknown_config_path.string();
+    const std::vector<std::string_view> unknown_config{
+        "--config",
+        unknown_config_argument,
+    };
+    expect(!rlbs::parse_daemon_config(unknown_config),
+           "unknown config key is rejected");
+
     const group* current_group = ::getgrgid(::getegid());
     expect(current_group != nullptr, "current unix group can be inspected");
 
