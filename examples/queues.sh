@@ -8,7 +8,7 @@ set -eu
 # override these if the build or socket lives somewhere else:
 #   RLBS_BIN=/opt/rlbs/bin/rlbs RLBS_SOCKET=/run/rlbs/rlbs.sock ./queues.sh
 rlbs_bin="${RLBS_BIN:-./build/rlbs}"
-rlbs_socket="${RLBS_SOCKET:-/tmp/rlbs.sock}"
+rlbs_socket="${RLBS_SOCKET:-/run/rlbs/rlbs.sock}"
 
 # the seeded default queue is already here. this prints every queue and its two
 # switches before we change anything.

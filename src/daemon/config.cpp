@@ -326,7 +326,7 @@ std::string_view daemon_usage() {
 options:
   --config PATH             read daemon settings from a key = value file
   --database PATH           sqlite database path (default: rlbs.db)
-  --socket PATH             unix control socket (default: /tmp/rlbs.sock)
+  --socket PATH             unix control socket (default: /run/rlbs/rlbs.sock)
   --socket-group GROUP      group allowed to connect (default: daemon group)
   --spool PATH              execution output spool (default: beside database)
   --node-id ID              local node name (default: local)

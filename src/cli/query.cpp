@@ -441,7 +441,7 @@ std::string_view queue_usage() {
     return R"usage(usage: rlbs queue [options]
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   --all, -x              include completed, failed, and cancelled jobs
   -h, --help             show this help
 )usage";
@@ -451,7 +451,7 @@ std::string_view status_usage() {
     return R"usage(usage: rlbs status [options] JOB_ID
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   -h, --help             show this help
 )usage";
 }
@@ -460,7 +460,7 @@ std::string_view cancel_usage() {
     return R"usage(usage: rlbs cancel [options] JOB_ID
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   -h, --help             show this help
 )usage";
 }
@@ -471,7 +471,7 @@ std::string_view nodes_usage() {
 resource columns use total/reserved/used/available.
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   -h, --help             show this help
 )usage";
 }

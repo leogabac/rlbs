@@ -328,7 +328,7 @@ std::string_view submit_usage() {
        rlbs submit [--socket PATH] JOB.rlbs
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   --queue NAME, -q NAME  submit to this queue (default: default)
   --name NAME            job name (default: executable filename)
   --cpus N               requested cpus (default: 1)

@@ -24,7 +24,7 @@ void test_minimal_submit() {
     expect(command.has_value(), "minimal submit parses");
 
     if (command) {
-        expect(command->socket_path == "/tmp/rlbs.sock",
+        expect(command->socket_path == "/run/rlbs/rlbs.sock",
                "minimal submit uses the default socket");
         expect(command->spec.name == "echo",
                "minimal submit derives its job name");

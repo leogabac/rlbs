@@ -6,7 +6,7 @@
 set -eu
 
 rlbs_bin="${RLBS_BIN:-./build/rlbs}"
-rlbs_socket="${RLBS_SOCKET:-/tmp/rlbs.sock}"
+rlbs_socket="${RLBS_SOCKET:-/run/rlbs/rlbs.sock}"
 
 printf 'current client uid: %s\n' "$(id -u)"
 "$rlbs_bin" queue --socket "$rlbs_socket"

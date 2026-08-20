@@ -13,12 +13,13 @@
 
 #include <rlbs/core/resources.hpp>
 #include <rlbs/core/types.hpp>
+#include <rlbs/control/defaults.hpp>
 
 namespace rlbs {
 
 struct DaemonConfig {
     std::filesystem::path database_path{"rlbs.db"};
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     std::optional<std::string> socket_group;
     std::filesystem::path spool_path;
     NodeId node_id{"local"};

@@ -8,29 +8,30 @@
 #include <vector>
 
 #include <rlbs/control/protocol.hpp>
+#include <rlbs/control/defaults.hpp>
 
 namespace rlbs {
 
 struct QueueCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     bool include_finished{false};
     bool show_help{false};
 };
 
 struct StatusCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     JobId job_id{0};
     bool show_help{false};
 };
 
 struct CancelCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     JobId job_id{0};
     bool show_help{false};
 };
 
 struct NodesCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     bool show_help{false};
 };
 

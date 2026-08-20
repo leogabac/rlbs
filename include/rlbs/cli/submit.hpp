@@ -7,11 +7,12 @@
 #include <string_view>
 
 #include <rlbs/core/job_spec.hpp>
+#include <rlbs/control/defaults.hpp>
 
 namespace rlbs {
 
 struct SubmitCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     JobSpec spec;
     bool show_help{false};
 };

@@ -6,7 +6,7 @@
 set -eu
 
 rlbs_bin="${RLBS_BIN:-./build/rlbs}"
-rlbs_socket="${RLBS_SOCKET:-/tmp/rlbs.sock}"
+rlbs_socket="${RLBS_SOCKET:-/run/rlbs/rlbs.sock}"
 
 printf 'shell identity: %s:%s\n' "$(id -u)" "$(id -g)"
 

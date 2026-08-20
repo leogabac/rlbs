@@ -218,7 +218,7 @@ enabled controls whether new jobs may enter a queue.
 started controls whether waiting jobs may launch.
 
 options:
-  --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --socket PATH          daemon socket (default: /run/rlbs/rlbs.sock)
   --priority N           larger values run first (default: 0)
   --max-running N        maximum active jobs (default: unlimited)
   -h, --help             show this help

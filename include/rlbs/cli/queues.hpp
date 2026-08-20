@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <rlbs/core/batch_queue.hpp>
+#include <rlbs/control/defaults.hpp>
 
 namespace rlbs {
 
@@ -26,7 +27,7 @@ enum class QueuesCommandAction {
 };
 
 struct QueuesCommand {
-    std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    std::filesystem::path socket_path{default_control_socket};
     QueuesCommandAction action{QueuesCommandAction::list};
     std::string name;
     int priority{0};
