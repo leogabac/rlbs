@@ -3,10 +3,13 @@
 #include <rlbs/cli/duration.hpp>
 
 #include <charconv>
+#include <cerrno>
 #include <iomanip>
+#include <pwd.h>
 #include <sstream>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace rlbs {
 namespace {
@@ -30,6 +33,29 @@ namespace {
     }
 
     return "unknown";
+}
+
+[[nodiscard]] std::string_view pbs_state(JobState state) {
+    switch (state) {
+    case JobState::pending:
+        return "Q";
+    case JobState::assigned:
+        // the scheduler reserved resources but the child has not started yet.
+        // h is the least confusing pbs-ish marker while that handoff happens.
+        return "H";
+    case JobState::starting:
+        return "E";
+    case JobState::running:
+        return "R";
+    case JobState::completed:
+        return "C";
+    case JobState::failed:
+        return "F";
+    case JobState::cancelled:
+        return "X";
+    }
+
+    return "?";
 }
 
 [[nodiscard]] std::expected<std::string_view, std::string>
@@ -88,8 +114,27 @@ void write_command(std::ostringstream& output,
         return "legacy";
     }
 
-    return std::to_string(owner->user_id) + ':' +
-           std::to_string(owner->group_id);
+    // numeric ids are what the daemon trusts, but people should not have to
+    // keep an ldap phonebook in their head just to read qstat.
+    std::vector<char> buffer(16 * 1024);
+
+    for (;;) {
+        passwd record{};
+        passwd* found = nullptr;
+        const int result = ::getpwuid_r(static_cast<uid_t>(owner->user_id),
+                                        &record, buffer.data(), buffer.size(),
+                                        &found);
+
+        if (result == 0 && found != nullptr && found->pw_name != nullptr) {
+            return found->pw_name;
+        }
+        if (result != ERANGE ||
+            buffer.size() >= static_cast<std::size_t>(1024 * 1024)) {
+            return "uid=" + std::to_string(owner->user_id);
+        }
+
+        buffer.resize(buffer.size() * 2);
+    }
 }
 
 template <typename Integer>
@@ -110,6 +155,10 @@ parse_queue_command(std::span<const std::string_view> arguments) {
 
         if (option == "--help" || option == "-h") {
             command.show_help = true;
+            continue;
+        }
+        if (option == "--all" || option == "-x") {
+            command.include_finished = true;
             continue;
         }
         if (option != "--socket") {
@@ -273,16 +322,16 @@ parse_nodes_command(std::span<const std::string_view> arguments) {
 
 std::string format_queue(const std::vector<JobSummary>& jobs) {
     std::ostringstream output;
-    output << std::left << std::setw(8) << "job id" << std::setw(12) << "state"
-           << std::setw(14) << "queue" << std::setw(16) << "owner uid:gid"
+    output << std::left << std::setw(8) << "job id" << std::setw(24) << "name"
+           << std::setw(7) << "state" << std::setw(16) << "user"
            << std::right << std::setw(6) << "cpus" << std::setw(12)
            << "memory mb" << std::setw(6) << "gpus" << "  " << std::left
            << std::setw(12) << "time" << std::setw(12) << "walltime"
-           << std::setw(16) << "node" << "name\n";
+           << "node\n";
 
     for (const auto& job : jobs) {
-        output << std::left << std::setw(8) << job.id << std::setw(12)
-               << state_name(job.state) << std::setw(14) << job.queue
+        output << std::left << std::setw(8) << job.id << std::setw(24)
+               << job.name << std::setw(7) << pbs_state(job.state)
                << std::setw(16) << owner_name(job.owner) << std::right
                << std::setw(6)
                << job.resources.cpus << std::setw(12) << job.resources.memory_mb
@@ -292,8 +341,7 @@ std::string format_queue(const std::vector<JobSummary>& jobs) {
                                       : "-")
                << std::setw(12)
                << (job.walltime ? format_duration(*job.walltime) : "-")
-               << std::setw(16) << job.assigned_node.value_or("-") << job.name
-               << '\n';
+               << job.assigned_node.value_or("-") << '\n';
     }
 
     return output.str();
@@ -303,8 +351,9 @@ std::string format_status(const Job& job) {
     std::ostringstream output;
     output << "job id: " << job.id << '\n'
            << "name: " << job.spec.name << '\n'
-           << "state: " << state_name(job.state) << '\n'
-           << "owner uid:gid: " << owner_name(job.owner) << '\n'
+           << "state: " << pbs_state(job.state) << " ("
+           << state_name(job.state) << ")\n"
+           << "user: " << owner_name(job.owner) << '\n'
            << "queue: " << job.spec.queue << '\n'
            << "queue sequence: " << job.queue_sequence << '\n'
            << "node: " << job.assigned_node.value_or("-") << '\n'
@@ -393,6 +442,7 @@ std::string_view queue_usage() {
 
 options:
   --socket PATH          daemon socket (default: /tmp/rlbs.sock)
+  --all, -x              include completed, failed, and cancelled jobs
   -h, --help             show this help
 )usage";
 }

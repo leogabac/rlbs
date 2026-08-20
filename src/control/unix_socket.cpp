@@ -249,8 +249,12 @@ peer_owner(int socket) {
         return SubmitResponse{.job_id = job->id};
     }
 
-    if (std::holds_alternative<QueueRequest>(request)) {
-        auto jobs = repository.all();
+    if (const auto* queue = std::get_if<QueueRequest>(&request)) {
+        // listing active work is the normal scheduler view. history is still
+        // available when somebody explicitly asks for it, without making every
+        // qstat grow forever on a long-lived workstation.
+        auto jobs = queue->include_finished ? repository.all()
+                                            : repository.schedulable();
 
         if (!jobs) {
             return ErrorResponse{.message = jobs.error().message};
@@ -636,8 +640,9 @@ ControlClient::submit(const JobSpec& spec) const {
 }
 
 std::expected<std::vector<JobSummary>, ControlSocketError>
-ControlClient::queue() const {
-    auto response = request(ControlRequest{QueueRequest{}});
+ControlClient::queue(bool include_finished) const {
+    auto response = request(
+        ControlRequest{QueueRequest{.include_finished = include_finished}});
 
     if (!response) {
         return std::unexpected{std::move(response.error())};

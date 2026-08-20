@@ -13,7 +13,7 @@ namespace rlbs {
 namespace {
 
 constexpr std::uint32_t protocol_magic = 0x524c4253;
-constexpr std::uint16_t protocol_version = 5;
+constexpr std::uint16_t protocol_version = 6;
 constexpr std::uint8_t submit_request_type = 1;
 constexpr std::uint8_t queue_request_type = 2;
 constexpr std::uint8_t status_request_type = 3;
@@ -1090,8 +1090,9 @@ encode_request(const ControlRequest& request) {
         if (auto encoded = encode_job_spec(payload, submit->spec); !encoded) {
             return std::unexpected{std::move(encoded.error())};
         }
-    } else if (std::holds_alternative<QueueRequest>(request)) {
+    } else if (const auto* queue = std::get_if<QueueRequest>(&request)) {
         write_header(payload, queue_request_type);
+        payload.integer8(queue->include_finished ? 1 : 0);
     } else if (const auto* status = std::get_if<StatusRequest>(&request)) {
         write_header(payload, status_request_type);
         payload.integer64(status->job_id);
@@ -1147,7 +1148,18 @@ decode_request(const std::vector<std::byte>& frame) {
 
         request = SubmitRequest{.spec = std::move(*spec)};
     } else if (*type == queue_request_type) {
-        request = QueueRequest{};
+        auto include_finished = reader.integer8();
+
+        if (!include_finished) {
+            return std::unexpected{std::move(include_finished.error())};
+        }
+        if (*include_finished > 1) {
+            return std::unexpected{
+                error(ProtocolOperation::decode,
+                      "queue history flag is not boolean")};
+        }
+
+        request = QueueRequest{.include_finished = *include_finished != 0};
     } else if (*type == status_request_type) {
         auto job_id = reader.integer64();
 

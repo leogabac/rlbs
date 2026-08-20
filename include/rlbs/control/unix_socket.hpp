@@ -95,7 +95,7 @@ class ControlClient {
     submit(const JobSpec& spec) const;
 
     [[nodiscard]] std::expected<std::vector<JobSummary>, ControlSocketError>
-    queue() const;
+    queue(bool include_finished = false) const;
 
     [[nodiscard]] std::expected<Job, ControlSocketError>
     status(JobId job_id) const;

@@ -90,8 +90,8 @@ void test_submit_request_round_trip() {
 }
 
 void test_query_requests_round_trip() {
-    const auto queue =
-        rlbs::encode_request(rlbs::ControlRequest{rlbs::QueueRequest{}});
+    const auto queue = rlbs::encode_request(
+        rlbs::ControlRequest{rlbs::QueueRequest{.include_finished = true}});
     const auto status = rlbs::encode_request(
         rlbs::ControlRequest{rlbs::StatusRequest{.job_id = 73}});
     const auto cancel = rlbs::encode_request(
@@ -108,6 +108,8 @@ void test_query_requests_round_trip() {
         const auto decoded = rlbs::decode_request(*queue);
         expect(decoded && std::holds_alternative<rlbs::QueueRequest>(*decoded),
                "queue request keeps its type");
+        expect(decoded && std::get<rlbs::QueueRequest>(*decoded).include_finished,
+               "queue request keeps its history flag");
     }
 
     if (status) {

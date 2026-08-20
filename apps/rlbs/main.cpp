@@ -62,9 +62,10 @@ walltime uses -l walltime=HH:MM:SS.
 }
 
 [[nodiscard]] std::string_view qstat_usage() {
-    return R"usage(usage: qstat [--socket PATH] [JOB_ID]
+    return R"usage(usage: qstat [--socket PATH] [-x] [JOB_ID]
 
-without a job id qstat lists the queue. with one it shows that job.
+without a job id qstat lists active jobs. -x includes finished history.
+with one it shows that job.
 )usage";
 }
 
@@ -134,7 +135,7 @@ int queue(int argc, char* argv[], CommandStyle style) {
     }
 
     rlbs::ControlClient client{command->socket_path};
-    auto jobs = client.queue();
+    auto jobs = client.queue(command->include_finished);
 
     if (!jobs) {
         print_control_error(name, jobs.error());
@@ -324,7 +325,8 @@ int queues(int argc, char* argv[]) {
             ++index;
             continue;
         }
-        if (argument != "--help" && argument != "-h") {
+        if (argument != "--help" && argument != "-h" &&
+            argument != "--all" && argument != "-x") {
             return true;
         }
     }

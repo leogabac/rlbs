@@ -34,7 +34,11 @@ struct SubmitRequest {
     JobSpec spec;
 };
 
-struct QueueRequest {};
+// the default list is the live scheduler view. history is opt-in because old
+// completed jobs eventually become a lot more noise than useful information.
+struct QueueRequest {
+    bool include_finished{false};
+};
 
 struct StatusRequest {
     JobId job_id{0};

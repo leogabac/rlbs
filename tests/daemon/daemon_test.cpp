@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <grp.h>
+#include <pwd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -193,6 +194,15 @@ run_cli_command(const std::filesystem::path& executable,
         std::istreambuf_iterator<char>{input},
         std::istreambuf_iterator<char>{},
     };
+}
+
+[[nodiscard]] std::string current_username() {
+    if (const passwd* account = ::getpwuid(::getuid());
+        account != nullptr && account->pw_name != nullptr) {
+        return account->pw_name;
+    }
+
+    return "uid=" + std::to_string(::getuid());
 }
 
 void test_config_parser() {
@@ -455,16 +465,21 @@ void test_real_cli_submits_to_daemon(
     expect(std::filesystem::exists(temporary.path() / "cli-job.e1"),
            "cli-submitted job creates its default stderr file");
 
-    const auto queued = run_cli_command(
+    const auto active_queue = run_cli_command(
         cli_executable, {"queue", "--socket", socket_path.string()});
-    expect(queued.exit_code == 0, "real rlbs queue exits successfully");
+    expect(active_queue.exit_code == 0, "real rlbs queue exits successfully");
+    expect(!active_queue.output.contains("cli-job"),
+           "default queue hides completed history");
+
+    const auto queued = run_cli_command(
+        cli_executable, {"queue", "--all", "--socket", socket_path.string()});
+    expect(queued.exit_code == 0, "historical rlbs queue exits successfully");
     expect(queued.output.contains("cli-job"),
-           "real rlbs queue prints the submitted job");
-    expect(queued.output.contains("completed"),
-           "real rlbs queue prints the final state");
-    expect(queued.output.contains(std::to_string(::getuid()) + ":" +
-                                  std::to_string(::getgid())),
-           "real rlbs queue prints peer ownership");
+           "historical queue prints the submitted job");
+    expect(queued.output.contains("C"),
+           "historical queue prints the pbs completed state");
+    expect(queued.output.contains(current_username()),
+           "historical queue prints the submitter username");
 
     const auto status = run_cli_command(
         cli_executable, {"status", "--socket", socket_path.string(), "1"});
@@ -473,10 +488,8 @@ void test_real_cli_submits_to_daemon(
            "real rlbs status prints the requested id");
     expect(status.output.contains("name: cli-job"),
            "real rlbs status prints the job name");
-    expect(status.output.contains(
-               "owner uid:gid: " + std::to_string(::getuid()) + ":" +
-               std::to_string(::getgid())),
-           "real rlbs status prints peer ownership");
+    expect(status.output.contains("user: " + current_username()),
+           "real rlbs status prints the submitter username");
     expect(status.output.contains("exit code: 0"),
            "real rlbs status prints the process result");
 
@@ -601,14 +614,14 @@ void test_real_cli_submits_to_daemon(
            "pbs script creates its configured stderr file");
 
     const auto qstat_queue = run_cli_command(
-        qstat_executable, {"--socket", socket_path.string()});
+        qstat_executable, {"-x", "--socket", socket_path.string()});
     expect(qstat_queue.exit_code == 0, "plain qstat exits successfully");
     expect(qstat_queue.output.contains("pbs-script"),
            "plain qstat reuses the queue handler");
     expect(qstat_queue.output.contains("00:05:00"),
            "qstat queue prints requested walltime");
-    expect(qstat_queue.output.contains("long"),
-           "qstat queue prints the selected queue");
+    expect(qstat_queue.output.contains("C"),
+           "qstat history uses the pbs completed state");
 
     const auto qstat_status = run_cli_command(
         qstat_executable, {"--socket", socket_path.string(), "3"});

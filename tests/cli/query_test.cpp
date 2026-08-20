@@ -2,6 +2,8 @@
 
 #include <array>
 #include <iostream>
+#include <pwd.h>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -15,6 +17,15 @@ void expect(bool condition, std::string_view message) {
     }
 }
 
+[[nodiscard]] std::string expected_user(std::uint32_t user_id) {
+    if (const passwd* account = ::getpwuid(static_cast<uid_t>(user_id));
+        account != nullptr && account->pw_name != nullptr) {
+        return account->pw_name;
+    }
+
+    return "uid=" + std::to_string(user_id);
+}
+
 void test_queue_parser() {
     const std::array<std::string_view, 2> arguments{"--socket",
                                                     "/tmp/custom.sock"};
@@ -22,6 +33,11 @@ void test_queue_parser() {
 
     expect(parsed && parsed->socket_path == "/tmp/custom.sock",
            "queue parses its socket");
+
+    const std::array<std::string_view, 1> history{"--all"};
+    const auto parsed_history = rlbs::parse_queue_command(history);
+    expect(parsed_history && parsed_history->include_finished,
+           "queue parses the history flag");
 
     const std::array<std::string_view, 1> unknown{"surprise"};
     expect(!rlbs::parse_queue_command(unknown),
@@ -111,11 +127,12 @@ void test_queue_format() {
     const auto output = rlbs::format_queue(jobs);
 
     expect(output.contains("job id"), "queue prints a header");
-    expect(output.contains("7       pending"), "queue prints pending jobs");
-    expect(output.contains("8       running"), "queue prints running jobs");
+    expect(output.contains("waiting job"), "queue prints name second");
+    expect(output.contains("Q"), "queue maps pending to pbs queued state");
+    expect(output.contains("R"), "queue maps running to pbs running state");
     expect(output.contains("head"), "queue prints assigned nodes");
-    expect(output.contains("short"), "queue prints queue names");
-    expect(output.contains("1000:100"), "queue prints numeric job ownership");
+    expect(output.contains(expected_user(1000)),
+           "queue prints the actual username when available");
     expect(output.contains("legacy"), "queue marks an old unowned job");
     expect(output.contains("running job"), "queue prints job names");
     expect(output.contains("00:00:17"), "queue prints execution time");
@@ -158,10 +175,11 @@ void test_status_format() {
     const auto output = rlbs::format_status(job);
 
     expect(output.contains("job id: 9"), "status prints the job id");
-    expect(output.contains("state: completed"), "status prints the state");
+    expect(output.contains("state: C (completed)"),
+           "status prints pbs state and detail");
     expect(output.contains("queue: short"), "status prints the queue");
-    expect(output.contains("owner uid:gid: 1000:100"),
-           "status prints numeric job ownership");
+    expect(output.contains("user: " + expected_user(1000)),
+           "status prints a readable job owner");
     expect(output.contains("node: head"), "status prints the node");
     expect(output.contains("command: \"/bin/sh\" \"-c\""),
            "status keeps command arguments separate");

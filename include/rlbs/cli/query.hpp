@@ -13,6 +13,7 @@ namespace rlbs {
 
 struct QueueCommand {
     std::filesystem::path socket_path{"/tmp/rlbs.sock"};
+    bool include_finished{false};
     bool show_help{false};
 };
 
