@@ -11,6 +11,7 @@
 #include <rlbs/core/node.hpp>
 #include <rlbs/core/scheduler.hpp>
 #include <rlbs/execution/process_runner.hpp>
+#include <rlbs/execution/cgroup.hpp>
 #include <rlbs/local/output_spool.hpp>
 #include <rlbs/local/runtime_environment.hpp>
 #include <rlbs/logging/logger.hpp>
@@ -55,7 +56,8 @@ class LocalCoordinator {
                      Node local_node,
                      const SchedulingPolicy& scheduler,
                      std::filesystem::path spool_directory,
-                     Logger* logger = nullptr);
+                     Logger* logger = nullptr,
+                     std::filesystem::path cgroup_root = {});
 
     [[nodiscard]] std::expected<void, LocalCoordinatorError>
     tick(bool start_new_jobs = true);
@@ -78,6 +80,7 @@ class LocalCoordinator {
         bool cancellation_requested{false};
         bool cancellation_forced{false};
         bool walltime_exceeded{false};
+        std::optional<JobCgroup> cgroup;
         std::chrono::steady_clock::time_point cancellation_requested_at{};
     };
 
@@ -92,6 +95,7 @@ class LocalCoordinator {
     LocalProcessRunner runner_;
     Logger* logger_{nullptr};
     std::filesystem::path spool_directory_;
+    std::filesystem::path cgroup_root_;
     std::vector<Node> nodes_;
     std::list<ActiveJob> active_jobs_;
 };

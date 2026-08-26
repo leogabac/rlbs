@@ -21,6 +21,7 @@ struct DaemonConfig {
     std::filesystem::path database_path{"rlbs.db"};
     std::filesystem::path socket_path{default_control_socket};
     std::optional<std::string> socket_group;
+    std::optional<std::filesystem::path> cgroup_root;
     std::filesystem::path spool_path;
     NodeId node_id{"local"};
     ResourceCapacity capacity{

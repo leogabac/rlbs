@@ -17,11 +17,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <map>
 #include <string_view>
 #include <utility>
 
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -100,8 +102,12 @@ enum class ChildOperation : int {
     set_user_id,
     change_working_directory,
     redirect_output,
+    set_memory_limit,
     execute,
 };
+
+[[noreturn]] void report_child_failure(int pipe_fd, ChildOperation operation,
+                                       int system_error);
 
 // keep this fixed-size and boring because the child writes its raw bytes
 struct ChildFailure {
@@ -124,6 +130,31 @@ struct ChildFailure {
 // the kernel see only half the value and leave us debugging a very fake mystery
 [[nodiscard]] bool contains_null(std::string_view value) {
     return value.find('\0') != std::string_view::npos;
+}
+
+void set_memory_limit(std::uint64_t memory_mb, int error_pipe) {
+    constexpr auto bytes_per_mb = std::uint64_t{1024 * 1024};
+
+    if (memory_mb > std::numeric_limits<std::uint64_t>::max() /
+                         bytes_per_mb) {
+        report_child_failure(error_pipe, ChildOperation::set_memory_limit,
+                             EOVERFLOW);
+    }
+
+    const auto bytes = memory_mb * bytes_per_mb;
+    const auto limit = static_cast<rlim_t>(bytes);
+
+    if (static_cast<std::uint64_t>(limit) != bytes) {
+        report_child_failure(error_pipe, ChildOperation::set_memory_limit,
+                             EOVERFLOW);
+    }
+
+    const rlimit resource_limit{.rlim_cur = limit, .rlim_max = limit};
+
+    if (::setrlimit(RLIMIT_AS, &resource_limit) < 0) {
+        report_child_failure(error_pipe, ChildOperation::set_memory_limit,
+                             errno);
+    }
 }
 
 // check the whole request while we are still safely in the parent. spec carries
@@ -386,6 +417,7 @@ void redirect_fd(int source, int destination, int error_pipe) {
                                 bool joined_output,
                                 const std::filesystem::path& directory,
                                 const std::optional<PreparedIdentity>& identity,
+                                const std::optional<std::uint64_t>& memory_limit_mb,
                                 const std::vector<std::string>& candidates,
                                 char* const* argv, char* const* environment) {
     if (::setpgid(0, 0) < 0) {
@@ -435,6 +467,13 @@ void redirect_fd(int source, int destination, int error_pipe) {
         }
     }
 
+    if (memory_limit_mb) {
+        // setrlimit is inherited by every python thread and child process. do
+        // it after identity setup but before chdir/exec so the job cannot
+        // escape the requested address-space ceiling once user code starts.
+        set_memory_limit(*memory_limit_mb, error_pipe);
+    }
+
     // do this after dropping credentials. checking the directory as root and
     // then handing it to an ordinary job would quietly bypass its permissions.
     if (::chdir(directory.c_str()) < 0) {
@@ -477,6 +516,8 @@ void redirect_fd(int source, int destination, int error_pipe) {
         return ProcessOperation::change_working_directory;
     case ChildOperation::redirect_output:
         return ProcessOperation::redirect_output;
+    case ChildOperation::set_memory_limit:
+        return ProcessOperation::set_memory_limit;
     case ChildOperation::execute:
         return ProcessOperation::execute;
     }
@@ -502,6 +543,7 @@ child_failure_context(ChildOperation operation, const ProcessSpec& spec) {
     case ChildOperation::create_process_group:
     case ChildOperation::change_working_directory:
     case ChildOperation::redirect_output:
+    case ChildOperation::set_memory_limit:
     case ChildOperation::execute:
         return spec.argv.front();
     }
@@ -693,7 +735,8 @@ LocalProcessRunner::launch(const ProcessSpec& spec) const {
         // the child writes failures, so keeping the read end open serves no one
         pipe_read.reset();
         execute_child(pipe_write.get(), stdout_file->get(), stderr_file->get(),
-                      joined_output, *directory, identity, candidates,
+                      joined_output, *directory, identity, spec.memory_limit_mb,
+                      candidates,
                       argv_pointers.data(), environment_pointers.data());
     }
 

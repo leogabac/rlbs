@@ -163,8 +163,8 @@ void test_queued_job_runs_to_completion() {
     expect(loaded && *loaded, "completed local job reloads");
 
     if (loaded && *loaded) {
-        expect((*loaded)->state == rlbs::JobState::completed,
-               "local job reaches completed");
+        expect((*loaded)->state == rlbs::JobState::failed,
+               "local job records a nonzero exit as failed");
         expect((*loaded)->assigned_node == "local",
                "local job keeps its assigned node");
         expect((*loaded)->result && (*loaded)->result->exit_code == 7,

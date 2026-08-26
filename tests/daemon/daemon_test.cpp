@@ -215,6 +215,8 @@ void test_config_parser() {
         "/tmp/custom.sock",
         "--socket-group",
         "rlbs-users",
+        "--cgroup-root",
+        "/sys/fs/cgroup",
         "--spool",
         "/tmp/custom-spool",
         "--cpus",
@@ -244,6 +246,8 @@ void test_config_parser() {
         expect(parsed->socket_group &&
                    *parsed->socket_group == "rlbs-users",
                "socket group parses");
+        expect(parsed->cgroup_root && *parsed->cgroup_root == "/sys/fs/cgroup",
+               "cgroup root parses");
         expect(parsed->spool_path == "/tmp/custom-spool",
                "spool path parses");
         expect(parsed->capacity.cpus == 12, "cpu capacity parses");

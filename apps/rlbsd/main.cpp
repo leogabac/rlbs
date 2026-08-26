@@ -1,5 +1,6 @@
 #include <csignal>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string_view>
@@ -103,6 +104,7 @@ int main(int argc, char* argv[]) {
         scheduler,
         config->spool_path,
         &logger,
+        config->cgroup_root.value_or(std::filesystem::path{}),
     };
     auto control = rlbs::ControlServer::listen(
         config->socket_path, repository, queues, coordinator, socket_group_id,

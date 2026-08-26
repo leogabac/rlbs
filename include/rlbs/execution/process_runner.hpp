@@ -25,6 +25,9 @@ struct ProcessSpec {
     // this comes from the daemon's socket credentials, never from job text.
     // nullopt keeps the runner useful for trusted internal callers and tests.
     std::optional<JobOwner> run_as;
+    // zero means leave the address-space limit alone. a nonzero value is
+    // applied in the child before exec and inherited by python worker threads.
+    std::optional<std::uint64_t> memory_limit_mb;
 };
 
 // keep the runner name readable while storing the exact same type on a job
@@ -44,6 +47,7 @@ enum class ProcessOperation {
     set_user_id,
     change_working_directory,
     redirect_output,
+    set_memory_limit,
     execute,
     wait,
     signal_process_group,

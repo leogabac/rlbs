@@ -75,6 +75,13 @@ spool = /var/lib/rlbs/spool
 batch work. Keep interactive capacity with `reserve-cpus` and
 `reserve-memory-mb`; the scheduler will not allocate that reserve.
 
+The installed systemd unit also enables cgroup v2 delegation and passes
+`--cgroup-root /sys/fs/cgroup`. That makes each launched job get its own kernel
+resource fence: `cpu.max` limits CPU time, `memory.max` limits RAM, and swap is
+disabled for the job. A memory-limit kill is recorded as a failed job instead
+of looking like a successful command. Standalone development daemons leave
+cgroups off unless `--cgroup-root` is supplied.
+
 The file format is deliberately plain `key = value`. Blank lines and `#`
 comments are allowed. `rlbsd --config PATH` loads a file, and explicit daemon
 arguments override its values for one-off diagnostics.

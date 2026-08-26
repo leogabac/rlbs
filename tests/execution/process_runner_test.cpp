@@ -228,6 +228,7 @@ void test_missing_executable() {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     };
     const auto launched = rlbs::LocalProcessRunner{}.launch(spec);
 
@@ -252,6 +253,7 @@ void test_execution_and_redirection(const std::filesystem::path& self) {
         .stderr_path = stderr_path.filename(),
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     };
     const rlbs::LocalProcessRunner runner;
     auto launched = runner.launch(spec);
@@ -301,6 +303,7 @@ void test_signal_result(const std::filesystem::path& self) {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(launched.has_value(), "signal helper launches");
@@ -328,6 +331,7 @@ void test_path_search() {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(launched.has_value(),
@@ -363,6 +367,7 @@ void test_process_group_cancellation(const std::filesystem::path& self) {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(launched.has_value(), "process-group helper launches");
@@ -409,6 +414,7 @@ void test_force_kill(const std::filesystem::path& self) {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = std::nullopt,
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(launched.has_value(), "force-kill helper launches");
@@ -474,6 +480,7 @@ void test_execution_identity(const std::filesystem::path& self) {
         .stderr_path = std::nullopt,
         .append_output = false,
         .run_as = requested,
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(launched.has_value(), "process launches with a requested identity");
@@ -515,6 +522,7 @@ void test_unprivileged_identity_switch_is_rejected() {
                 .user_id = other_uid,
                 .group_id = static_cast<std::uint32_t>(::getegid()),
             },
+        .memory_limit_mb = std::nullopt,
     });
 
     expect(!launched, "unprivileged runner rejects another uid");

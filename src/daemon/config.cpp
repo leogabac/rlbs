@@ -71,6 +71,8 @@ apply_option(DaemonConfig& config, std::string_view option,
         config.socket_path = value;
     } else if (option == "socket-group") {
         config.socket_group = std::string{value};
+    } else if (option == "cgroup-root") {
+        config.cgroup_root = value;
     } else if (option == "spool") {
         config.spool_path = value;
     } else if (option == "node-id") {
@@ -328,6 +330,7 @@ options:
   --database PATH           sqlite database path (default: rlbs.db)
   --socket PATH             unix control socket (default: /run/rlbs/rlbs.sock)
   --socket-group GROUP      group allowed to connect (default: daemon group)
+  --cgroup-root PATH        cgroup v2 root for per-job limits (default: off)
   --spool PATH              execution output spool (default: beside database)
   --node-id ID              local node name (default: local)
   --cpus N                  total local cpu capacity (default: 1)

@@ -7,9 +7,10 @@ Type=simple
 
 # rlbsd must start privileged so each child can become the user who submitted
 # it. do not add User= here unless the scheduler intentionally becomes private.
-ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/rlbsd --config /etc/rlbs/rlbsd.conf
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/rlbsd --config /etc/rlbs/rlbsd.conf --cgroup-root /sys/fs/cgroup
 Restart=on-failure
 RestartSec=2s
+Delegate=yes
 
 # systemd owns these parents; rlbsd only makes the socket and sqlite files in
 # them. this also clears the runtime socket after a reboot without stale-file

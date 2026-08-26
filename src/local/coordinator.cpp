@@ -78,6 +78,10 @@ process_spec(const Job& job,
         // ownership was observed by the daemon at submission. passing that
         // exact value down keeps job text out of the privilege decision.
         .run_as = job.owner,
+        .memory_limit_mb = job.spec.resources.memory_mb == 0
+                               ? std::nullopt
+                               : std::optional<std::uint64_t>{
+                                     job.spec.resources.memory_mb},
     };
 }
 
@@ -118,10 +122,12 @@ LocalCoordinator::LocalCoordinator(JobRepository& repository,
                                    QueueRepository& queues, Node local_node,
                                    const SchedulingPolicy& scheduler,
                                    std::filesystem::path spool_directory,
-                                   Logger* logger)
+                                   Logger* logger,
+                                   std::filesystem::path cgroup_root)
     : repository_{repository}, queues_{queues}, scheduler_{scheduler},
       logger_{logger},
-      spool_directory_{std::move(spool_directory)} {
+      spool_directory_{std::move(spool_directory)},
+      cgroup_root_{std::move(cgroup_root)} {
     nodes_.push_back(std::move(local_node));
 }
 
@@ -321,22 +327,65 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
             continue;
         }
 
+        // a process that returns nonzero or dies from a signal did not
+        // complete successfully. this keeps a memory-limit failure from
+        // looking healthy just because waitpid returned a result.
+        bool cgroup_oom = false;
+        if (active->cgroup) {
+            auto observed = active->cgroup->oom_killed();
+            if (!observed) {
+                return std::unexpected{LocalCoordinatorError{
+                    .operation = LocalCoordinatorOperation::poll_process,
+                    .message = observed.error().message,
+                    .repository_error = std::nullopt,
+                    .process_error = std::nullopt,
+                    .runtime_environment_error = std::nullopt,
+                    .output_spool_error = std::nullopt,
+                }};
+            }
+            cgroup_oom = *observed;
+        }
+
+        const bool process_failed = cgroup_oom ||
+            (*result)->terminating_signal.has_value() ||
+            ((*result)->exit_code && *(*result)->exit_code != 0);
+
+        // remove the kernel fence before publishing the terminal state. if
+        // the directory is still busy, keep the job active so the next tick
+        // can retry cleanup without double-releasing its allocation.
+        if (active->cgroup) {
+            if (auto removed = active->cgroup->remove(); !removed) {
+                return std::unexpected{LocalCoordinatorError{
+                    .operation = LocalCoordinatorOperation::release_resources,
+                    .message = removed.error().message,
+                    .repository_error = std::nullopt,
+                    .process_error = std::nullopt,
+                    .runtime_environment_error = std::nullopt,
+                    .output_spool_error = std::nullopt,
+                }};
+            }
+        }
+
         const auto final_state =
             active->walltime_exceeded
                 ? JobState::failed
                 : active->cancellation_requested ? JobState::cancelled
-                                                 : JobState::completed;
+                : process_failed ? JobState::failed : JobState::completed;
+        const auto detail = active->walltime_exceeded
+                                ? "walltime exceeded"
+                            : active->cancellation_requested
+                                ? "local process cancelled"
+                            : cgroup_oom
+                                ? "job cgroup OOM killed"
+                            : process_failed
+                                ? "local process failed"
+                                : "local process exited";
         auto completed = repository_.transition(
             active->job_id, {
                                 .state = final_state,
                                 .assigned_node = std::nullopt,
                                 .result = **result,
-                                .detail =
-                                    active->walltime_exceeded
-                                        ? "walltime exceeded"
-                                    : active->cancellation_requested
-                                        ? "local process cancelled"
-                                        : "local process exited",
+                                .detail = detail,
                             });
 
         if (!completed) {
@@ -353,7 +402,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::reap_finished() {
                     << (active->walltime_exceeded
                             ? "failed walltime_exceeded"
                         : active->cancellation_requested ? "cancelled"
-                                                         : "completed");
+                        : process_failed ? "failed" : "completed");
 
             if ((*result)->exit_code) {
                 message << " exit_code=" << *(*result)->exit_code;
@@ -568,10 +617,30 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
             std::move(output_spool.error()))};
     }
 
+    std::optional<JobCgroup> cgroup;
+    if (!cgroup_root_.empty()) {
+        auto created = JobCgroup::create(cgroup_root_, job.id,
+                                         job.spec.resources);
+        if (!created) {
+            static_cast<void>(repository_.transition(
+                job.id, {.state = JobState::failed,
+                          .assigned_node = std::nullopt,
+                          .result = std::nullopt,
+                          .detail = "could not configure job cgroup: " +
+                                    created.error().message}));
+            static_cast<void>(release(assignment.allocation));
+            return {};
+        }
+        cgroup = std::move(*created);
+    }
+
     auto launched =
         runner_.launch(process_spec(job, *runtime_environment, *output_spool));
 
     if (!launched) {
+        if (cgroup) {
+            static_cast<void>(cgroup->remove());
+        }
         // open/exec failures can still leave useful stderr in the spool. stage
         // it through the normal path instead of making launch errors special
         auto staged = output_spool->stage();
@@ -608,6 +677,23 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         // a bad executable is a failed job, not a broken daemon tick. the queue
         // can keep moving after its failure has been recorded
         return {};
+    }
+
+    if (cgroup) {
+        auto attached = cgroup->attach(launched->pid());
+        if (!attached) {
+            static_cast<void>(runner_.force_kill(*launched));
+            static_cast<void>(runner_.wait(*launched));
+            static_cast<void>(cgroup->remove());
+            static_cast<void>(repository_.transition(
+                job.id, {.state = JobState::failed,
+                          .assigned_node = std::nullopt,
+                          .result = std::nullopt,
+                          .detail = "could not attach job cgroup: " +
+                                    attached.error().message}));
+            static_cast<void>(release(assignment.allocation));
+            return {};
+        }
     }
 
     auto running =
@@ -661,6 +747,7 @@ std::expected<void, LocalCoordinatorError> LocalCoordinator::start_next() {
         .cancellation_requested = false,
         .cancellation_forced = false,
         .walltime_exceeded = false,
+        .cgroup = std::move(cgroup),
         .cancellation_requested_at = {},
     });
     return {};
